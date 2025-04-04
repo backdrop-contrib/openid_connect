@@ -1,0 +1,12 @@
+{
+    "_config_name": "openid_connect.settings",
+    "openid_connect_clients_enabled": [],
+    "openid_connect_always_save_userinfo": true,
+    "openid_connect_user_pictures": true,
+    "openid_connect_connect_existing_users": false,
+    "openid_connect_userinfo_mapping_property_property_name": "dynamic variable in file /openid_connect/openid_connect.module line 233",
+    "openid_connect_client_clientname_client_id": "dynamic variable in file /openid_connect/openid_connect.install line 21",
+    "openid_connect_client_clientname_client_secret": "dynamic variable in file /openid_connect/openid_connect.install line 22",
+    "openid_connect_client_client_name": "dynamic variable in file /openid_connect/openid_connect.module line 101",
+    "openid_connect_userinfo_mapping_claims": []
+}

@@ -1,0 +1,15 @@
+<?php
+
+/**
+ * @file
+ * An example implementation of OpenID Connect client.
+ */
+
+/**
+ * Implements hook_autoload_info().
+ */
+function openid_connect_example_autoload_info() {
+  return array(
+    'OpenIDConnectClientExample' => 'plugins/openid_connect_client/example/OpenIDConnectClientExample.class.php',
+  );
+}

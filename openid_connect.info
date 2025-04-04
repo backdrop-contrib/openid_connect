@@ -1,0 +1,11 @@
+name = OpenID Connect
+description = A pluggable client implementation for the OpenID Connect protocol.
+backdrop = 1.x
+type = module
+
+package = "OAuth2"
+
+configure = admin/config/services/openid-connect
+
+dependencies[] = entity
+

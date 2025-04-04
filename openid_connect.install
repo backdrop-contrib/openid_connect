@@ -1,0 +1,63 @@
+<?php
+
+/**
+ * @file
+ * Install, update, and uninstall functions for OpenID Connect module.
+ */
+
+/**
+ * Implements hook_uninstall().
+ */
+function openid_connect_uninstall() {
+  config('openid_connect.settings')->delete();
+}
+
+// TODO The old hook_update_N functions cannot be applied to Backdrop.
+
+function openid_connect_update_7100() { }
+
+/**
+ * Implements hook_update_last_removed().
+ */
+function openid_connect_update_last_removed() {
+  return 7100;
+}
+
+/**
+ * Migrate openid_connect variables to config.
+ */
+function openid_connect_update_1000() {
+  // Migrate any existing variables to config
+  $config = config('openid_connect.settings');
+  $config->set('openid_connect_clients_enabled', update_variable_get('openid_connect_clients_enabled', array()));
+  $config->set('openid_connect_always_save_userinfo', update_variable_get('openid_connect_always_save_userinfo', TRUE));
+  $config->set('openid_connect_user_pictures', update_variable_get('openid_connect_user_pictures', TRUE));
+  $config->set('openid_connect_connect_existing_users', update_variable_get('openid_connect_connect_existing_users', array()));
+  $config->set('openid_connect_userinfo_mapping_property_property_name', update_variable_get('openid_connect_userinfo_mapping_property_property_name', 'dynamic variable in file /openid_connect/openid_connect.module line 233'));
+  $config->set('openid_connect_client_clientname_client_id', update_variable_get('openid_connect_client_clientname_client_id', 'dynamic variable in file /openid_connect/openid_connect.install line 21'));
+  $config->set('openid_connect_client_clientname_client_secret', update_variable_get('openid_connect_client_clientname_client_secret', 'dynamic variable in file /openid_connect/openid_connect.install line 22'));
+  $config->set('openid_connect_client_client_name', update_variable_get('openid_connect_client_client_name', 'dynamic variable in file /openid_connect/openid_connect.module line 101'));
+  $config->set('openid_connect_userinfo_mapping_claims', update_variable_get('openid_connect_userinfo_mapping_claims', array()));
+  $config->save();
+
+  update_variable_del('openid_connect_clients_enabled');
+  update_variable_del('openid_connect_always_save_userinfo');
+  update_variable_del('openid_connect_user_pictures');
+  update_variable_del('openid_connect_connect_existing_users');
+  update_variable_del('openid_connect_userinfo_mapping_property_property_name');
+  update_variable_del('openid_connect_client_clientname_client_id');
+  update_variable_del('openid_connect_client_clientname_client_secret');
+  update_variable_del('openid_connect_client_client_name');
+  update_variable_del('openid_connect_userinfo_mapping_claims');
+}
+
+/**
+ * Implements hook_install().
+ */
+function openid_connect_install() {
+  // Dynamically generated variable data was detected.
+  // /openid_connect/openid_connect.module line 233
+  // /openid_connect/openid_connect.install line 21
+  // /openid_connect/openid_connect.install line 22
+  // /openid_connect/openid_connect.module line 101
+}

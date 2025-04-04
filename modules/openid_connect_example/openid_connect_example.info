@@ -1,0 +1,9 @@
+name = OpenID Connect Example
+description = A example client implementation for the OpenID Connect protocol.
+backdrop = 1.x
+type = module
+package = OAuth2
+
+hidden = true
+
+dependencies[] = openid_connect
