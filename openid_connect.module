@@ -927,7 +927,7 @@ function openid_connect_extract_sub($user_data, $userinfo) {
 function openid_connect_complete_authorization($client, $tokens, $destination) {
   $config = config('openid_connect.settings');
   if (user_is_logged_in()) {
-    throw new ('User already logged in');
+    throw new Exception('User already logged in');
   }
 
   $user_data = $client->decodeIdToken($tokens['id_token']);
@@ -1023,7 +1023,8 @@ function openid_connect_complete_authorization($client, $tokens, $destination) {
 function openid_connect_connect_current_user($client, $tokens) {
   global $user;
   if (!$user->uid) {
-    throw new ('User not logged in');
+    throw new Exception ('User not logged in');
+
   }
 
   $user_data = $client->decodeIdToken($tokens['id_token']);
