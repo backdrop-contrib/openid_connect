@@ -32,6 +32,7 @@ function openid_connect_menu() {
     'page callback' => 'openid_connect_redirect_page',
     'page arguments' => array(1),
     'access callback' => 'openid_connect_redirect_access',
+    'access arguments' => array(1),
     'type' => MENU_CALLBACK,
     'file' => 'includes/openid_connect.pages.inc',
   );
