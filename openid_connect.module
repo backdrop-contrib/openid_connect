@@ -27,12 +27,13 @@ function openid_connect_menu() {
     'access arguments' => array('configure openid connect clients'),
     'file' => 'includes/openid_connect.admin.inc',
   );
-  $items[OPENID_CONNECT_REDIRECT_PATH_BASE . '/%'] = array(
+  $items[OPENID_CONNECT_REDIRECT_PATH_BASE . '/%client'] = array(
     'title' => 'OpenID Connect redirect page',
     'page callback' => 'openid_connect_redirect_page',
     'page arguments' => array(1),
     'access callback' => 'openid_connect_redirect_access',
     'access arguments' => array(1),
+    'access file' => 'includes/openid_connect.pages.inc',
     'type' => MENU_CALLBACK,
     'file' => 'includes/openid_connect.pages.inc',
   );
@@ -225,19 +226,6 @@ function openid_connect_confirm_state_token($state_token) {
 }
 
 /**
- * Access callback: Redirect page.
- */
-function openid_connect_redirect_access() {
-  // Confirm anti-forgery state token. This round-trip verification helps to
-
-
-  // ensure that the user, not a malicious script, is making the request.
-
-
-  return !empty($_GET['state']) && openid_connect_confirm_state_token($_GET['state']);
-}
-
-/**
  * Access callback: Connected accounts page.
  */
 function openid_connect_connected_accounts_access($account) {
@@ -348,6 +336,13 @@ function openid_connect_save_user_picture($account, $picture_url) {
   $account->picture = $picture_file;
   $account->data['oidc_picture_hash'] = $hash;
   user_save($account);
+
+  // Consider adding file type validation
+  $file_info = getimagesizefromstring($response->data);
+  if ($file_info === FALSE) {
+    watchdog('openid_connect', 'Invalid image file received from URL: @url', array('@url' => $picture_url), WATCHDOG_ERROR);
+    return;
+  }
 }
 
 /**
@@ -928,31 +923,32 @@ function openid_connect_extract_sub($user_data, $userinfo) {
 function openid_connect_complete_authorization($client, $tokens, $destination) {
   $config = config('openid_connect.settings');
   if (user_is_logged_in()) {
+    watchdog('openid_connect_' . $client->getName(), 'User already logged in during authorization', array(), WATCHDOG_ERROR);
     throw new Exception('User already logged in');
   }
 
   $user_data = $client->decodeIdToken($tokens['id_token']);
+  watchdog('openid_connect_' . $client->getName(), 'Decoded ID token: @data', array('@data' => print_r($user_data, TRUE)), WATCHDOG_DEBUG);
+  
   $userinfo = $client->retrieveUserInfo($tokens['access_token']);
+  watchdog('openid_connect_' . $client->getName(), 'Retrieved user info: @info', array('@info' => print_r($userinfo, TRUE)), WATCHDOG_DEBUG);
 
   if (empty($userinfo['email'])) {
-    watchdog('openid_connect', 'No e-mail address provided by @provider', array('@provider' => $client->getLabel()), WATCHDOG_ERROR);
-
+    watchdog('openid_connect_' . $client->getName(), 'No e-mail address provided by @provider', array('@provider' => $client->getLabel()), WATCHDOG_ERROR);
     return FALSE;
   }
 
   $sub = openid_connect_extract_sub($user_data, $userinfo);
   if (empty($sub)) {
-    watchdog('openid_connect', 'No "sub" found from @provider', array('@provider' => $client->getLabel()), WATCHDOG_ERROR);
-
+    watchdog('openid_connect_' . $client->getName(), 'No "sub" found from @provider', array('@provider' => $client->getLabel()), WATCHDOG_ERROR);
     return FALSE;
   }
+  watchdog('openid_connect_' . $client->getName(), 'Extracted sub: @sub', array('@sub' => $sub), WATCHDOG_DEBUG);
 
   // Check whether the e-mail address is valid.
-
-
   if (!filter_var($userinfo['email'], FILTER_VALIDATE_EMAIL)) {
+    watchdog('openid_connect_' . $client->getName(), 'Invalid email address: @email', array('@email' => $userinfo['email']), WATCHDOG_ERROR);
     backdrop_set_message(t('The e-mail address %mail is not valid.', array('%mail' => $userinfo['email'])), 'error');
-
     return FALSE;
   }
 
@@ -960,50 +956,44 @@ function openid_connect_complete_authorization($client, $tokens, $destination) {
   $results = module_invoke_all('openid_connect_pre_authorize', $tokens, $account, $userinfo, $client->getName());
 
   // Deny access if any module returns FALSE.
-
-
   if (in_array(FALSE, $results, TRUE)) {
-    watchdog('openid_connect', 'Login denied for @email via pre-authorize hook.', array('@email' => $userinfo['email']), WATCHDOG_ERROR);
+    watchdog('openid_connect_' . $client->getName(), 'Login denied for @email via pre-authorize hook', array('@email' => $userinfo['email']), WATCHDOG_ERROR);
     return FALSE;
   }
 
   if ($account) {
+    watchdog('openid_connect_' . $client->getName(), 'Found existing account for user: @email', array('@email' => $userinfo['email']), WATCHDOG_DEBUG);
     // An existing account was found. Save user claims.
-
-
     if ($config->get('openid_connect_always_save_userinfo')) {
       openid_connect_save_userinfo($account, $userinfo);
     }
     $account_is_new = FALSE;
   }
   elseif ($account = user_load_by_mail($userinfo['email'])) {
+    watchdog('openid_connect_' . $client->getName(), 'Found existing account with matching email: @email', array('@email' => $userinfo['email']), WATCHDOG_DEBUG);
     // Check whether there is an e-mail address conflict.
-
-
     if ($config->get('openid_connect_connect_existing_users')) {
       openid_connect_connect_account($account, $client->getName(), $sub);
       $account_is_new = FALSE;
     }
     else {
+      watchdog('openid_connect_' . $client->getName(), 'Email conflict for @email - connection not allowed', array('@email' => $userinfo['email']), WATCHDOG_ERROR);
       backdrop_set_message(t('The e-mail address %email is already taken.', array('%email' => $userinfo['email'])), 'error');
-
       return FALSE;
     }
   }
   else {
+    watchdog('openid_connect_' . $client->getName(), 'Creating new account for user: @email', array('@email' => $userinfo['email']), WATCHDOG_DEBUG);
     // Create a new account.
-
-
     $account = openid_connect_create_user($sub, $userinfo, $client->getName());
     // Reload $account in case it has been altered in a user hook elsewhere.
-
-
     $account = user_load($account->uid);
     openid_connect_save_userinfo($account, $userinfo);
     $account_is_new = TRUE;
   }
 
   openid_connect_login_user($account, $destination);
+  watchdog('openid_connect_' . $client->getName(), 'User @email logged in successfully', array('@email' => $userinfo['email']), WATCHDOG_INFO);
 
   module_invoke_all('openid_connect_post_authorize', $tokens, $account, $userinfo, $client->getName(), $account_is_new);
 
@@ -1024,8 +1014,7 @@ function openid_connect_complete_authorization($client, $tokens, $destination) {
 function openid_connect_connect_current_user($client, $tokens) {
   global $user;
   if (!$user->uid) {
-    throw new Exception ('User not logged in');
-
+    throw new Exception('User not logged in');
   }
 
   $user_data = $client->decodeIdToken($tokens['id_token']);

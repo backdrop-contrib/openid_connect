@@ -9,9 +9,8 @@
  * Page callback: Page whereto OpenID Connect login provider redirects.
  */
 function openid_connect_redirect_page($client_name) {
-  // Delete the state token, since it's already been confirmed.
-  unset($_SESSION['openid_connect_state']);
-
+  watchdog('openid_connect_' . $client_name, 'Processing redirect page for client: @client', array('@client' => $client_name), WATCHDOG_DEBUG);
+  
   // Get parameters from the session, and then clean up.
   $parameters = array(
     'destination' => 'user',
@@ -25,25 +24,40 @@ function openid_connect_redirect_page($client_name) {
     }
   }
   $destination = $parameters['destination'];
+  watchdog('openid_connect_' . $client_name, 'Retrieved parameters from session: @params', array('@params' => print_r($parameters, TRUE)), WATCHDOG_DEBUG);
 
   $client = openid_connect_get_client($client_name);
   if (!isset($_GET['error']) && (!$client || !isset($_GET['code']))) {
-    // In case we don't have an error, but the client could not be loaded or
-    // there is no state token specified, the URI is probably being visited
-    // outside of the login flow.
+    watchdog('openid_connect_' . $client_name, 'Invalid request - missing client, code, or error parameter', array(), WATCHDOG_ERROR);
     return MENU_NOT_FOUND;
   }
+
+  // Validate state token before proceeding
+  if (!isset($_GET['state']) || !isset($_SESSION['openid_connect_state']) || $_GET['state'] !== $_SESSION['openid_connect_state']) {
+    watchdog('openid_connect_' . $client_name, 'Invalid state token provided. Expected: @expected, Received: @received', 
+      array(
+        '@expected' => isset($_SESSION['openid_connect_state']) ? $_SESSION['openid_connect_state'] : 'not set',
+        '@received' => isset($_GET['state']) ? $_GET['state'] : 'not set'
+      ), 
+      WATCHDOG_ERROR
+    );
+    backdrop_set_message(t('Invalid state token. Please try logging in again.'), 'error');
+    backdrop_goto('user/login');
+    return;
+  }
+
+  // Delete the state token after validation
+  unset($_SESSION['openid_connect_state']);
+  watchdog('openid_connect_' . $client_name, 'State token validated successfully', array(), WATCHDOG_DEBUG);
 
   $provider_param = array('@provider' => $client->getLabel());
 
   if (isset($_GET['error'])) {
     if ($_GET['error'] == 'access_denied') {
-      // If we have an "access denied" error, that means the user hasn't granted
-      // the authorization for the claims.
+      watchdog('openid_connect_' . $client_name, 'User denied authorization request', array(), WATCHDOG_INFO);
       backdrop_set_message(t('Logging in with @provider has been canceled.', $provider_param), 'warning');
     }
     else {
-      // Any other error should be logged. E.g. invalid scope.
       $variables = array(
         '@error' => $_GET['error'],
         '@details' => isset($_GET['error_description']) ? $_GET['error_description'] : t('None'),
@@ -52,32 +66,53 @@ function openid_connect_redirect_page($client_name) {
     }
   }
   else {
+    watchdog('openid_connect_' . $client_name, 'Received authorization code: @code', array('@code' => $_GET['code']), WATCHDOG_DEBUG);
+    
     // Process the login or connect operations.
     $tokens = $client->retrieveTokens($_GET['code']);
     if ($tokens) {
+      watchdog('openid_connect_' . $client_name, 'Successfully retrieved tokens from client', array(), WATCHDOG_DEBUG);
+      
       if ($parameters['op'] === 'login') {
         $success = openid_connect_complete_authorization($client, $tokens, $destination);
         if (!$success) {
+          watchdog('openid_connect_' . $client_name, 'Failed to complete authorization', array(), WATCHDOG_ERROR);
           backdrop_set_message(t('Logging in with @provider could not be completed due to an error.', $provider_param), 'error');
+        }
+        else {
+          watchdog('openid_connect_' . $client_name, 'Successfully completed authorization', array(), WATCHDOG_INFO);
         }
       }
       elseif ($parameters['op'] === 'connect' && $parameters['connect_uid'] === $GLOBALS['user']->uid) {
         $success = openid_connect_connect_current_user($client, $tokens);
         if ($success) {
+          watchdog('openid_connect_' . $client_name, 'Successfully connected user account', array(), WATCHDOG_INFO);
           backdrop_set_message(t('Account successfully connected with @provider.', $provider_param));
         }
         else {
+          watchdog('openid_connect_' . $client_name, 'Failed to connect user account', array(), WATCHDOG_ERROR);
           backdrop_set_message(t('Connecting with @provider could not be completed due to an error.', $provider_param), 'error');
         }
       }
+    }
+    else {
+      watchdog('openid_connect_' . $client_name, 'Failed to retrieve tokens from client', array(), WATCHDOG_ERROR);
     }
   }
 
   // It's possible to set 'options' in the redirect destination.
   if (is_array($destination)) {
+    watchdog('openid_connect_' . $client_name, 'Redirecting to: @path with options: @options', 
+      array(
+        '@path' => $destination[0],
+        '@options' => print_r($destination[1], TRUE)
+      ), 
+      WATCHDOG_DEBUG
+    );
     backdrop_goto($destination[0], $destination[1]);
   }
   else {
+    watchdog('openid_connect_' . $client_name, 'Redirecting to: @path', array('@path' => $destination), WATCHDOG_DEBUG);
     backdrop_goto($destination);
   }
 }
