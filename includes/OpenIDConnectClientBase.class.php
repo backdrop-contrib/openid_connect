@@ -119,6 +119,7 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
     $verifier = backdrop_random_key(32);
     $_SESSION['openid_connect_code_verifier'] = $verifier;
     watchdog('openid_connect_' . $this->name, 'Generated PKCE code verifier: @verifier', array('@verifier' => $verifier), WATCHDOG_DEBUG);
+    watchdog('openid_connect_' . $this->name, 'Step 1: Generated PKCE code verifier and stored in session', array(), WATCHDOG_INFO);
     return $verifier;
   }
 
@@ -135,6 +136,7 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
     $challenge = base64_encode(hash('sha256', $verifier, TRUE));
     $challenge = rtrim(strtr($challenge, '+/', '-_'), '=');
     watchdog('openid_connect_' . $this->name, 'Generated PKCE code challenge: @challenge', array('@challenge' => $challenge), WATCHDOG_DEBUG);
+    watchdog('openid_connect_' . $this->name, 'Step 2: Generated PKCE code challenge using SHA-256', array(), WATCHDOG_INFO);
     return $challenge;
   }
 
@@ -142,6 +144,8 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    * {@inheritdoc}
    */
   public function authorize($scope = 'openid email') {
+    watchdog('openid_connect_' . $this->name, 'Step 3: Starting authorization process with scope: @scope', array('@scope' => $scope), WATCHDOG_INFO);
+    
     $redirect_uri = OPENID_CONNECT_REDIRECT_PATH_BASE . '/' . $this->name;
     
     // Generate PKCE code verifier and challenge
@@ -170,6 +174,8 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
       ), 
       WATCHDOG_DEBUG
     );
+    watchdog('openid_connect_' . $this->name, 'Step 4: Redirecting to authorization endpoint with PKCE parameters', array(), WATCHDOG_INFO);
+    
     // Clear $_GET['destination'] because we need to override it.
     unset($_GET['destination']);
     backdrop_goto($endpoints['authorization'], $url_options);
@@ -179,6 +185,8 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    * {@inheritdoc}
    */
   public function retrieveTokens($authorization_code) {
+    watchdog('openid_connect_' . $this->name, 'Step 5: Starting token retrieval with authorization code', array(), WATCHDOG_INFO);
+    
     // Exchange `code` for access token and ID token.
     $redirect_uri = OPENID_CONNECT_REDIRECT_PATH_BASE . '/' . $this->name;
     
@@ -188,6 +196,7 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
       array('@verifier' => $code_verifier), 
       WATCHDOG_DEBUG
     );
+    watchdog('openid_connect_' . $this->name, 'Step 6: Retrieved PKCE code verifier from session', array(), WATCHDOG_INFO);
     unset($_SESSION['openid_connect_code_verifier']);
     
     $post_data = array(
@@ -215,9 +224,12 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
       ), 
       WATCHDOG_DEBUG
     );
+    watchdog('openid_connect_' . $this->name, 'Step 7: Sending token request with PKCE code verifier', array(), WATCHDOG_INFO);
+    
     $response = backdrop_http_request($endpoints['token'], $request_options);
     if (!isset($response->error) && $response->code == 200) {
       watchdog('openid_connect_' . $this->name, 'Successfully retrieved tokens from provider', array(), WATCHDOG_DEBUG);
+      watchdog('openid_connect_' . $this->name, 'Step 8: Successfully received tokens from provider', array(), WATCHDOG_INFO);
       $response_data = backdrop_json_decode($response->data);
       $tokens = array(
         'id_token' => $response_data['id_token'],
