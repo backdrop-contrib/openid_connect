@@ -160,8 +160,8 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
     
     watchdog('openid_connect_' . $this->name, 'Step 3: Starting authorization process with scope: @scope', array('@scope' => $scope), WATCHDOG_INFO);
     
-    $redirect_uri = OPENID_CONNECT_REDIRECT_PATH_BASE . '/' . $this->name;
-    watchdog('openid_connect_' . $this->name, 'Base redirect URI path: @uri', array('@uri' => $redirect_uri), WATCHDOG_DEBUG);
+    $redirect_uri = str_replace('-', '_', OPENID_CONNECT_REDIRECT_PATH_BASE) . '/' . $this->name;
+    watchdog('openid_connect_' . $this->name, 'Base redirect URI path: @uri', array('@uri' => $redirect_uri), WATCHDOG_INFO);
     
     $absolute_redirect_uri = url($redirect_uri, array(
       'absolute' => TRUE,
@@ -198,10 +198,7 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
     try {
       $endpoints = $this->getEndpoints();
       if (empty($endpoints['authorization'])) {
-        watchdog('openid_connect_' . $this->name, 'Authorization endpoint is not defined for client: @client', 
-          array('@client' => $this->name), 
-          WATCHDOG_ERROR
-        );
+        watchdog('openid_connect_' . $this->name, 'Authorization endpoint not found', array(), WATCHDOG_ERROR);
         return FALSE;
       }
 
@@ -234,7 +231,7 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
     watchdog('openid_connect_' . $this->name, 'Step 5: Starting token retrieval with authorization code', array(), WATCHDOG_INFO);
     
     // Exchange `code` for access token and ID token.
-    $redirect_uri = OPENID_CONNECT_REDIRECT_PATH_BASE . '/' . $this->name;
+    $redirect_uri = str_replace('-', '_', OPENID_CONNECT_REDIRECT_PATH_BASE) . '/' . $this->name;
     
     // Get the code verifier from session
     $code_verifier = isset($_SESSION['openid_connect_code_verifier']) ? $_SESSION['openid_connect_code_verifier'] : '';
