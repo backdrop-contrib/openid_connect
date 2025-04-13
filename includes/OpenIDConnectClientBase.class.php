@@ -45,6 +45,15 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
     $this->name = $name;
     $this->label = $label;
     $this->settings = $settings;
+    
+    // Log client initialization
+    watchdog('openid_connect', 'Initializing OpenID Connect client: @name (label: @label)', 
+      array(
+        '@name' => $name,
+        '@label' => $label
+      ), 
+      WATCHDOG_DEBUG
+    );
   }
 
   /**
@@ -144,9 +153,26 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    * {@inheritdoc}
    */
   public function authorize($scope = 'openid email') {
+    if (empty($this->name)) {
+      watchdog('openid_connect', 'Client name is not set for OpenID Connect client', array(), WATCHDOG_ERROR);
+      return FALSE;
+    }
+    
     watchdog('openid_connect_' . $this->name, 'Step 3: Starting authorization process with scope: @scope', array('@scope' => $scope), WATCHDOG_INFO);
     
     $redirect_uri = OPENID_CONNECT_REDIRECT_PATH_BASE . '/' . $this->name;
+    watchdog('openid_connect_' . $this->name, 'Base redirect URI path: @uri', array('@uri' => $redirect_uri), WATCHDOG_DEBUG);
+    
+    $absolute_redirect_uri = url($redirect_uri, array(
+      'absolute' => TRUE,
+      'language' => LANGUAGE_NONE,
+      'https' => TRUE,
+    ));
+    watchdog('openid_connect_' . $this->name, 'Absolute redirect URI: @uri', array('@uri' => $absolute_redirect_uri), WATCHDOG_DEBUG);
+    
+    // Log the configured redirect URI from settings
+    $configured_uri = $this->getSetting('redirect_uri');
+    watchdog('openid_connect_' . $this->name, 'Configured redirect URI in settings: @uri', array('@uri' => $configured_uri), WATCHDOG_DEBUG);
     
     // Generate PKCE code verifier and challenge
     $code_verifier = $this->generateCodeVerifier();
@@ -157,28 +183,48 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
         'client_id' => $this->getSetting('client_id'),
         'response_type' => 'code',
         'scope' => $scope,
-        'redirect_uri' => url($redirect_uri, array(
-          'absolute' => TRUE,
-          'language' => LANGUAGE_NONE,
-        )),
+        'redirect_uri' => $absolute_redirect_uri,
         'state' => openid_connect_create_state_token(),
         'code_challenge' => $code_challenge,
         'code_challenge_method' => 'S256',
       ),
     );
-    $endpoints = $this->getEndpoints();
-    watchdog('openid_connect_' . $this->name, 'Initiating authorization request to @endpoint with parameters: @params', 
-      array(
-        '@endpoint' => $endpoints['authorization'],
-        '@params' => print_r($url_options['query'], TRUE)
-      ), 
+
+    watchdog('openid_connect_' . $this->name, 'Authorization request parameters: @params', 
+      array('@params' => print_r($url_options['query'], TRUE)), 
       WATCHDOG_DEBUG
     );
-    watchdog('openid_connect_' . $this->name, 'Step 4: Redirecting to authorization endpoint with PKCE parameters', array(), WATCHDOG_INFO);
-    
-    // Clear $_GET['destination'] because we need to override it.
-    unset($_GET['destination']);
-    backdrop_goto($endpoints['authorization'], $url_options);
+
+    try {
+      $endpoints = $this->getEndpoints();
+      if (empty($endpoints['authorization'])) {
+        watchdog('openid_connect_' . $this->name, 'Authorization endpoint is not defined for client: @client', 
+          array('@client' => $this->name), 
+          WATCHDOG_ERROR
+        );
+        return FALSE;
+      }
+
+      watchdog('openid_connect_' . $this->name, 'Step 4: Redirecting to authorization endpoint with PKCE parameters', array(), WATCHDOG_INFO);
+      
+      // Log the complete authorization URL for debugging
+      $complete_url = $endpoints['authorization'] . '?' . backdrop_http_build_query($url_options['query']);
+      watchdog('openid_connect_' . $this->name, 'Complete authorization URL: @url', 
+        array('@url' => $complete_url), 
+        WATCHDOG_DEBUG
+      );
+      
+      // Clear $_GET['destination'] because we need to override it.
+      unset($_GET['destination']);
+      backdrop_goto($endpoints['authorization'], $url_options);
+    }
+    catch (Exception $e) {
+      watchdog('openid_connect_' . $this->name, 'Error during authorization: @error', 
+        array('@error' => $e->getMessage()), 
+        WATCHDOG_ERROR
+      );
+      return FALSE;
+    }
   }
 
   /**

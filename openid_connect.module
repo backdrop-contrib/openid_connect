@@ -12,13 +12,20 @@
 /**
  * Base path where to login providers can redirect in the OAuth2 flow.
  */
-define('OPENID_CONNECT_REDIRECT_PATH_BASE', 'openid-connect');
+define('OPENID_CONNECT_REDIRECT_PATH_BASE', 'openid_connect');
 
 /**
  * Implements hook_menu().
  */
 function openid_connect_menu() {
   $items = array();
+  
+  // Log the redirect path being registered
+  watchdog('openid_connect', 'Registering redirect path: @path', 
+    array('@path' => OPENID_CONNECT_REDIRECT_PATH_BASE . '/%client'), 
+    WATCHDOG_DEBUG
+  );
+  
   $items['admin/config/services/openid-connect'] = array(
     'title' => 'OpenID Connect',
     'description' => 'Configure OpenID Connect, choose active OpenID Connect clients etc.',
@@ -27,16 +34,29 @@ function openid_connect_menu() {
     'access arguments' => array('configure openid connect clients'),
     'file' => 'includes/openid_connect.admin.inc',
   );
+  
+  // Add explicit path for generic client
+  $items['openid-connect/generic'] = array(
+    'title' => 'OpenID Connect Generic Client redirect',
+    'page callback' => 'openid_connect_redirect_page',
+    'page arguments' => array('generic'),
+    'access callback' => 'openid_connect_redirect_access',
+    'access arguments' => array('generic'),
+    'type' => MENU_CALLBACK,
+    'file' => 'includes/openid_connect.pages.inc',
+  );
+  
+  // Keep the wildcard path for other clients
   $items[OPENID_CONNECT_REDIRECT_PATH_BASE . '/%client'] = array(
     'title' => 'OpenID Connect redirect page',
     'page callback' => 'openid_connect_redirect_page',
     'page arguments' => array(1),
     'access callback' => 'openid_connect_redirect_access',
     'access arguments' => array(1),
-    'access file' => 'includes/openid_connect.pages.inc',
     'type' => MENU_CALLBACK,
     'file' => 'includes/openid_connect.pages.inc',
   );
+  
   $items['user/%user/connected-accounts'] = array(
     'title' => 'Connected accounts',
     'page callback' => 'backdrop_get_form',
@@ -46,6 +66,12 @@ function openid_connect_menu() {
     'type' => MENU_LOCAL_TASK,
     'weight' => 5,
     'file' => 'includes/openid_connect.forms.inc',
+  );
+
+  // Log all registered paths
+  watchdog('openid_connect', 'Registered menu items: @items', 
+    array('@items' => print_r(array_keys($items), TRUE)), 
+    WATCHDOG_DEBUG
   );
 
   return $items;

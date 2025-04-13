@@ -92,25 +92,17 @@ function openid_connect_redirect_page($client_name) {
  * Access callback for the redirect page.
  */
 function openid_connect_redirect_access($client_name) {
-  // Check if we have a state token to validate.
-  if (!isset($_SESSION['openid_connect_state'])) {
-    return FALSE;
-  }
-
-  // Check if the state token matches the one in the session.
-  if (!isset($_GET['state']) || $_GET['state'] !== $_SESSION['openid_connect_state']) {
-    return FALSE;
-  }
-
   // Check if the client exists and is enabled.
   $client = openid_connect_get_client($client_name);
   if (!$client) {
+    watchdog('openid_connect', 'Access denied: Client @client does not exist', array('@client' => $client_name), WATCHDOG_WARNING);
     return FALSE;
   }
 
   $config = config('openid_connect.settings');
   $enabled_clients = $config->get('openid_connect_clients_enabled');
   if (!isset($enabled_clients[$client_name]) || !$enabled_clients[$client_name]) {
+    watchdog('openid_connect', 'Access denied: Client @client is not enabled', array('@client' => $client_name), WATCHDOG_WARNING);
     return FALSE;
   }
 
