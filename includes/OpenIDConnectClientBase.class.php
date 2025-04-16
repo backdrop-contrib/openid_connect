@@ -42,18 +42,10 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    *   Admin-provided configuration.
    */
   public function __construct($name, $label, array $settings) {
+    watchdog('openid_connect', 'Initializing OpenID Connect client: %name', array('%name' => $name), WATCHDOG_DEBUG);
     $this->name = $name;
     $this->label = $label;
     $this->settings = $settings;
-    
-    // Log client initialization
-    watchdog('openid_connect', 'Initializing OpenID Connect client: @name (label: @label)', 
-      array(
-        '@name' => $name,
-        '@label' => $label
-      ), 
-      WATCHDOG_DEBUG
-    );
   }
 
   /**
@@ -74,7 +66,12 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    * {@inheritdoc}
    */
   public function getSetting($key, $default = NULL) {
-    return isset($this->settings[$key]) ? $this->settings[$key] : $default;
+    $value = isset($this->settings[$key]) ? $this->settings[$key] : $default;
+    // Trim client_id and client_secret to prevent whitespace issues
+    if (in_array($key, ['client_id', 'client_secret'])) {
+      $value = trim($value);
+    }
+    return $value;
   }
 
   /**
@@ -99,8 +96,21 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    * {@inheritdoc}
    */
   public function settingsFormValidate($form, &$form_state, $error_element_base) {
-    // No need to do anything, but make the function have a body anyway
-    // so that it's callable by overriding methods.
+    // Trim whitespace from client_id and client_secret
+    if (!empty($form_state['values']['client_id'])) {
+      $form_state['values']['client_id'] = trim($form_state['values']['client_id']);
+    }
+    if (!empty($form_state['values']['client_secret'])) {
+      $form_state['values']['client_secret'] = trim($form_state['values']['client_secret']);
+    }
+    
+    // Validate that required fields are not empty after trimming
+    if (empty($form_state['values']['client_id'])) {
+      form_error($form[$error_element_base . 'client_id'], t('Client ID is required.'));
+    }
+    if (empty($form_state['values']['client_secret'])) {
+      form_error($form[$error_element_base . 'client_secret'], t('Client secret is required.'));
+    }
   }
 
   /**
@@ -122,13 +132,23 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    * Generates a PKCE code verifier.
    *
    * @return string
-   *   A random code verifier string.
+   *   A random code verifier string that meets RFC 7636 requirements.
    */
   protected function generateCodeVerifier() {
-    $verifier = backdrop_random_key(32);
-    $_SESSION['openid_connect_code_verifier'] = $verifier;
-    watchdog('openid_connect_' . $this->name, 'Generated PKCE code verifier: @verifier', array('@verifier' => $verifier), WATCHDOG_DEBUG);
-    watchdog('openid_connect_' . $this->name, 'Step 1: Generated PKCE code verifier and stored in session', array(), WATCHDOG_INFO);
+    watchdog('openid_connect', 'Generating PKCE code verifier for client: %client', array('%client' => $this->name), WATCHDOG_DEBUG);
+    
+    // Generate a random string of 32 bytes (256 bits)
+    $random_bytes = backdrop_random_bytes(32);
+    
+    // Base64URL encode the random bytes and remove padding
+    $verifier = rtrim(strtr(base64_encode($random_bytes), '+/', '-_'), '=');
+    
+    // Store in session for token retrieval
+    $_SESSION['openid_connect_pkce_code_verifier'] = $verifier;
+    
+    watchdog('openid_connect', 'Generated PKCE code verifier of length %length', 
+      array('%length' => strlen($verifier)), WATCHDOG_DEBUG);
+    
     return $verifier;
   }
 
@@ -139,13 +159,20 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    *   The code verifier.
    *
    * @return string
-   *   The code challenge.
+   *   The code challenge in base64url format.
    */
   protected function generateCodeChallenge($verifier) {
-    $challenge = base64_encode(hash('sha256', $verifier, TRUE));
-    $challenge = rtrim(strtr($challenge, '+/', '-_'), '=');
-    watchdog('openid_connect_' . $this->name, 'Generated PKCE code challenge: @challenge', array('@challenge' => $challenge), WATCHDOG_DEBUG);
-    watchdog('openid_connect_' . $this->name, 'Step 2: Generated PKCE code challenge using SHA-256', array(), WATCHDOG_INFO);
+    watchdog('openid_connect', 'Generating PKCE code challenge for client: %client', array('%client' => $this->name), WATCHDOG_DEBUG);
+    
+    // SHA256 hash the verifier
+    $hash = hash('sha256', $verifier, true);
+    
+    // Base64URL encode the hash and remove padding
+    $challenge = rtrim(strtr(base64_encode($hash), '+/', '-_'), '=');
+    
+    watchdog('openid_connect', 'Generated PKCE code challenge of length %length', 
+      array('%length' => strlen($challenge)), WATCHDOG_DEBUG);
+    
     return $challenge;
   }
 
@@ -153,141 +180,187 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    * {@inheritdoc}
    */
   public function authorize($scope = 'openid email') {
-    if (empty($this->name)) {
-      watchdog('openid_connect', 'Client name is not set for OpenID Connect client', array(), WATCHDOG_ERROR);
-      return FALSE;
-    }
-    
-    watchdog('openid_connect_' . $this->name, 'Step 3: Starting authorization process with scope: @scope', array('@scope' => $scope), WATCHDOG_INFO);
-    
-    $redirect_uri = str_replace('-', '_', OPENID_CONNECT_REDIRECT_PATH_BASE) . '/' . $this->name;
-    watchdog('openid_connect_' . $this->name, 'Base redirect URI path: @uri', array('@uri' => $redirect_uri), WATCHDOG_INFO);
-    
+    watchdog('openid_connect', 'Starting authorization for client: %client with scope: %scope', 
+      array('%client' => $this->name, '%scope' => $scope), WATCHDOG_DEBUG);
+
+    $redirect_uri = OPENID_CONNECT_REDIRECT_PATH_BASE . '/' . $this->name;
     $absolute_redirect_uri = url($redirect_uri, array(
       'absolute' => TRUE,
       'language' => LANGUAGE_NONE,
-      'https' => TRUE,
     ));
-    watchdog('openid_connect_' . $this->name, 'Absolute redirect URI: @uri', array('@uri' => $absolute_redirect_uri), WATCHDOG_DEBUG);
     
-    // Log the configured redirect URI from settings
-    $configured_uri = $this->getSetting('redirect_uri');
-    watchdog('openid_connect_' . $this->name, 'Configured redirect URI in settings: @uri', array('@uri' => $configured_uri), WATCHDOG_DEBUG);
+    // Generate and store state token
+    $state = openid_connect_create_state_token();
     
     // Generate PKCE code verifier and challenge
     $code_verifier = $this->generateCodeVerifier();
     $code_challenge = $this->generateCodeChallenge($code_verifier);
     
+    // Save destination URL if it exists
+    openid_connect_save_destination();
+    
+    // Build authorization URL
     $url_options = array(
       'query' => array(
-        'client_id' => $this->getSetting('client_id'),
+        'client_id' => trim($this->getSetting('client_id')),
         'response_type' => 'code',
         'scope' => $scope,
         'redirect_uri' => $absolute_redirect_uri,
-        'state' => openid_connect_create_state_token(),
+        'state' => $state,
         'code_challenge' => $code_challenge,
         'code_challenge_method' => 'S256',
       ),
     );
 
-    watchdog('openid_connect_' . $this->name, 'Authorization request parameters: @params', 
-      array('@params' => print_r($url_options['query'], TRUE)), 
-      WATCHDOG_DEBUG
-    );
+    $endpoints = $this->getEndpoints();
+    watchdog('openid_connect', 'Redirecting to authorization endpoint: %url with state: %state', 
+      array(
+        '%url' => $endpoints['authorization'],
+        '%state' => $state
+      ), WATCHDOG_DEBUG);
 
-    try {
-      $endpoints = $this->getEndpoints();
-      if (empty($endpoints['authorization'])) {
-        watchdog('openid_connect_' . $this->name, 'Authorization endpoint not found', array(), WATCHDOG_ERROR);
-        return FALSE;
-      }
-
-      watchdog('openid_connect_' . $this->name, 'Step 4: Redirecting to authorization endpoint with PKCE parameters', array(), WATCHDOG_INFO);
-      
-      // Log the complete authorization URL for debugging
-      $complete_url = $endpoints['authorization'] . '?' . backdrop_http_build_query($url_options['query']);
-      watchdog('openid_connect_' . $this->name, 'Complete authorization URL: @url', 
-        array('@url' => $complete_url), 
-        WATCHDOG_DEBUG
-      );
-      
-      // Clear $_GET['destination'] because we need to override it.
-      unset($_GET['destination']);
-      backdrop_goto($endpoints['authorization'], $url_options);
-    }
-    catch (Exception $e) {
-      watchdog('openid_connect_' . $this->name, 'Error during authorization: @error', 
-        array('@error' => $e->getMessage()), 
-        WATCHDOG_ERROR
-      );
-      return FALSE;
-    }
+    // Clear $_GET['destination'] because we need to override it
+    unset($_GET['destination']);
+    
+    backdrop_goto($endpoints['authorization'], $url_options);
   }
 
   /**
-   * {@inheritdoc}
+   * Gets the redirect URL for the current request.
+   *
+   * @return string
+   *   The redirect URL.
+   */
+  public function getRedirectUrl() {
+    $endpoints = $this->getEndpoints();
+    return url($endpoints['redirect'], array('absolute' => TRUE));
+  }
+
+  /**
+   * Retrieves tokens from the token endpoint.
+   *
+   * @param string $authorization_code
+   *   Authorization code received from the authorization endpoint.
+   *
+   * @return array|bool
+   *   Array with tokens (access_token, id_token, refresh_token) or FALSE if
+   *   token retrieval failed.
    */
   public function retrieveTokens($authorization_code) {
-    watchdog('openid_connect_' . $this->name, 'Step 5: Starting token retrieval with authorization code', array(), WATCHDOG_INFO);
+    watchdog('openid_connect', 'Starting token retrieval for client: %client', array('%client' => $this->name), WATCHDOG_DEBUG);
     
-    // Exchange `code` for access token and ID token.
-    $redirect_uri = str_replace('-', '_', OPENID_CONNECT_REDIRECT_PATH_BASE) . '/' . $this->name;
-    
-    // Get the code verifier from session
-    $code_verifier = isset($_SESSION['openid_connect_code_verifier']) ? $_SESSION['openid_connect_code_verifier'] : '';
-    watchdog('openid_connect_' . $this->name, 'Retrieved PKCE code verifier from session: @verifier', 
-      array('@verifier' => $code_verifier), 
-      WATCHDOG_DEBUG
-    );
-    watchdog('openid_connect_' . $this->name, 'Step 6: Retrieved PKCE code verifier from session', array(), WATCHDOG_INFO);
-    unset($_SESSION['openid_connect_code_verifier']);
-    
-    $post_data = array(
-      'code' => $authorization_code,
-      'client_id' => $this->getSetting('client_id'),
-      'client_secret' => $this->getSetting('client_secret'),
-      'redirect_uri' => url($redirect_uri, array(
-        'absolute' => TRUE,
-        'language' => LANGUAGE_NONE,
-      )),
-      'grant_type' => 'authorization_code',
-      'code_verifier' => $code_verifier,
-    );
-    $request_options = array(
-      'method' => 'POST',
-      'data' => backdrop_http_build_query($post_data),
-      'timeout' => 15,
-      'headers' => array('Content-Type' => 'application/x-www-form-urlencoded'),
-    );
-    $endpoints = $this->getEndpoints();
-    watchdog('openid_connect_' . $this->name, 'Requesting tokens from @endpoint with parameters: @params', 
-      array(
-        '@endpoint' => $endpoints['token'],
-        '@params' => print_r($post_data, TRUE)
-      ), 
-      WATCHDOG_DEBUG
-    );
-    watchdog('openid_connect_' . $this->name, 'Step 7: Sending token request with PKCE code verifier', array(), WATCHDOG_INFO);
-    
-    $response = backdrop_http_request($endpoints['token'], $request_options);
-    if (!isset($response->error) && $response->code == 200) {
-      watchdog('openid_connect_' . $this->name, 'Successfully retrieved tokens from provider', array(), WATCHDOG_DEBUG);
-      watchdog('openid_connect_' . $this->name, 'Step 8: Successfully received tokens from provider', array(), WATCHDOG_INFO);
-      $response_data = backdrop_json_decode($response->data);
-      $tokens = array(
-        'id_token' => $response_data['id_token'],
-        'access_token' => $response_data['access_token'],
-      );
-      if (array_key_exists('expires_in', $response_data)) {
-        $tokens['expire'] = REQUEST_TIME + $response_data['expires_in'];
-      }
-      if (array_key_exists('refresh_token', $response_data)) {
-        $tokens['refresh_token'] = $response_data['refresh_token'];
-      }
-      return $tokens;
+    // Validate authorization code
+    if (empty($authorization_code)) {
+      watchdog('openid_connect', 'Empty authorization code provided', array(), WATCHDOG_ERROR);
+      return FALSE;
     }
-    else {
-      openid_connect_log_request_error(__FUNCTION__, $this->name, $response);
+
+    // Prepare token request
+    $redirect_uri = url('openid-connect/' . $this->name, array('absolute' => TRUE));
+    $endpoints = $this->getEndpoints();
+    
+    if (empty($endpoints['token'])) {
+      watchdog('openid_connect', 'Token endpoint not configured for client: %client', array('%client' => $this->name), WATCHDOG_ERROR);
+      return FALSE;
+    }
+
+    // Get client credentials
+    $client_id = trim($this->getSetting('client_id'));
+    $client_secret = trim($this->getSetting('client_secret'));
+    
+    if (empty($client_id) || empty($client_secret)) {
+      watchdog('openid_connect', 'Missing client credentials', array(), WATCHDOG_ERROR);
+      return FALSE;
+    }
+    
+    // Build request parameters
+    $request_params = array(
+      'code' => $authorization_code,
+      'client_id' => $client_id,
+      'client_secret' => $client_secret,
+      'redirect_uri' => $redirect_uri,
+      'grant_type' => 'authorization_code',
+      'scope' => 'openid email profile',
+    );
+
+    watchdog('openid_connect', 'Token request parameters prepared: endpoint=%endpoint, redirect=%redirect, client_id=%client_id', 
+      array(
+        '%endpoint' => $endpoints['token'],
+        '%redirect' => $redirect_uri,
+        '%client_id' => $client_id
+      ), WATCHDOG_DEBUG);
+
+    // Prepare HTTP request with Basic Auth
+    $request_options = array(
+      'headers' => array(
+        'Content-Type' => 'application/x-www-form-urlencoded',
+        'Accept' => 'application/json',
+        'Authorization' => 'Basic ' . base64_encode($client_id . ':' . $client_secret),
+      ),
+      'method' => 'POST',
+      'data' => http_build_query($request_params, '', '&'),
+      'timeout' => 30,
+      'verify' => TRUE,
+    );
+
+    try {
+      watchdog('openid_connect', 'Sending token request to: %endpoint with params: %params', 
+        array(
+          '%endpoint' => $endpoints['token'],
+          '%params' => print_r($request_params, TRUE)
+        ), WATCHDOG_DEBUG);
+      
+      $response = backdrop_http_request($endpoints['token'], $request_options);
+      
+      watchdog('openid_connect', 'Token response received. Code: %code, Error: %error, Data: %data', 
+        array(
+          '%code' => $response->code,
+          '%error' => isset($response->error) ? $response->error : 'none',
+          '%data' => isset($response->data) ? $response->data : 'none'
+        ), WATCHDOG_DEBUG);
+      
+      // Check for network level errors
+      if (isset($response->error)) {
+        watchdog('openid_connect', 'HTTP error in token request: %error', array('%error' => $response->error), WATCHDOG_ERROR);
+        return FALSE;
+      }
+      
+      // Parse and validate response
+      if ($response->code == 200) {
+        $response_data = backdrop_json_decode($response->data);
+        
+        if (!is_array($response_data)) {
+          watchdog('openid_connect', 'Invalid JSON response from token endpoint: %data', 
+            array('%data' => $response->data), WATCHDOG_ERROR);
+          return FALSE;
+        }
+        
+        // Check for required tokens
+        if (empty($response_data['access_token'])) {
+          watchdog('openid_connect', 'No access token in response: %response', 
+            array('%response' => print_r($response_data, TRUE)), WATCHDOG_ERROR);
+          return FALSE;
+        }
+        
+        watchdog('openid_connect', 'Successfully retrieved tokens for client: %client', array('%client' => $this->name), WATCHDOG_DEBUG);
+        
+        return array(
+          'id_token' => isset($response_data['id_token']) ? $response_data['id_token'] : NULL,
+          'access_token' => $response_data['access_token'],
+          'refresh_token' => isset($response_data['refresh_token']) ? $response_data['refresh_token'] : NULL,
+        );
+      }
+      else {
+        watchdog('openid_connect', 'Token request failed with HTTP %code. Response: %response', 
+          array(
+            '%code' => $response->code,
+            '%response' => isset($response->data) ? $response->data : 'No response data'
+          ), WATCHDOG_ERROR);
+        return FALSE;
+      }
+    }
+    catch (Exception $e) {
+      watchdog('openid_connect', 'Exception during token request: @message', array('@message' => $e->getMessage()), WATCHDOG_ERROR);
       return FALSE;
     }
   }
@@ -296,30 +369,121 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    * {@inheritdoc}
    */
   public function decodeIdToken($id_token) {
+    watchdog('openid_connect', 'Decoding ID token for client: %client', array('%client' => $this->name), WATCHDOG_DEBUG);
     list($headerb64, $claims64, $signatureb64) = explode('.', $id_token);
     $claims64 = str_replace(array('-', '_'), array('+', '/'), $claims64);
     $claims64 = base64_decode($claims64);
-    return backdrop_json_decode($claims64);
+    $claims = backdrop_json_decode($claims64);
+    watchdog('openid_connect', 'Successfully decoded ID token for client: %client', 
+      array('%client' => $this->name), WATCHDOG_DEBUG);
+    return $claims;
   }
 
   /**
-   * {@inheritdoc}
+   * Retrieves user info from the userinfo endpoint.
+   *
+   * @param string $access_token
+   *   Access token.
+   *
+   * @return array|bool
+   *   User info array with standardized keys, or FALSE if retrieval failed.
    */
   public function retrieveUserInfo($access_token) {
+    watchdog('openid_connect', 'Starting user info retrieval for client: %client', array('%client' => $this->name), WATCHDOG_DEBUG);
+    
+    if (empty($access_token)) {
+      watchdog('openid_connect', 'Empty access token provided', array(), WATCHDOG_ERROR);
+      return FALSE;
+    }
+
+    $endpoints = $this->getEndpoints();
+    if (empty($endpoints['userinfo'])) {
+      watchdog('openid_connect', 'User info endpoint not configured for client: %client', array('%client' => $this->name), WATCHDOG_ERROR);
+      return FALSE;
+    }
+
+    // Prepare request options
     $request_options = array(
       'headers' => array(
         'Authorization' => 'Bearer ' . $access_token,
+        'Accept' => 'application/json',
       ),
+      'method' => 'GET',
+      'timeout' => 15,
     );
-    $endpoints = $this->getEndpoints();
-    $response = backdrop_http_request($endpoints['userinfo'], $request_options);
-    if (!isset($response->error) && $response->code == 200) {
-      return backdrop_json_decode($response->data);
+
+    try {
+      watchdog('openid_connect', 'Sending user info request to: %endpoint', array('%endpoint' => $endpoints['userinfo']), WATCHDOG_DEBUG);
+      
+      $response = backdrop_http_request($endpoints['userinfo'], $request_options);
+      
+      // Check for network level errors
+      if (isset($response->error)) {
+        watchdog('openid_connect', 'HTTP error in user info request: %error', array('%error' => $response->error), WATCHDOG_ERROR);
+        return FALSE;
+      }
+
+      // Parse and validate response
+      if ($response->code == 200) {
+        $userinfo = backdrop_json_decode($response->data);
+        
+        if (!is_array($userinfo)) {
+          watchdog('openid_connect', 'Invalid JSON response from userinfo endpoint: %data', 
+            array('%data' => $response->data), WATCHDOG_ERROR);
+          return FALSE;
+        }
+
+        // Validate required fields
+        if (empty($userinfo['sub'])) {
+          watchdog('openid_connect', 'Missing required "sub" claim in userinfo response: %response', 
+            array('%response' => print_r($userinfo, TRUE)), WATCHDOG_ERROR);
+          return FALSE;
+        }
+
+        // Map standard claims
+        $mapped_userinfo = array();
+        $claims_mapping = array(
+          'sub' => 'sub',
+          'name' => 'name',
+          'given_name' => 'given_name',
+          'family_name' => 'family_name',
+          'email' => 'email',
+          'email_verified' => 'email_verified',
+          'locale' => 'locale',
+          'picture' => 'picture',
+        );
+
+        foreach ($claims_mapping as $src => $dest) {
+          if (isset($userinfo[$src])) {
+            $mapped_userinfo[$dest] = $userinfo[$src];
+          }
+        }
+
+        // Add any additional claims that might be useful
+        foreach ($userinfo as $key => $value) {
+          if (!isset($mapped_userinfo[$key])) {
+            $mapped_userinfo[$key] = $value;
+          }
+        }
+
+        watchdog('openid_connect', 'Successfully retrieved user info for sub: %sub', 
+          array('%sub' => $mapped_userinfo['sub']), WATCHDOG_DEBUG);
+        
+        return $mapped_userinfo;
+      }
+      else {
+        watchdog('openid_connect', 'User info request failed with HTTP %code. Response: %response', 
+          array(
+            '%code' => $response->code,
+            '%response' => isset($response->data) ? $response->data : 'No response data'
+          ), WATCHDOG_ERROR);
+        return FALSE;
+      }
     }
-
-    openid_connect_log_request_error(__FUNCTION__, $this->name, $response);
-
-    return array();
+    catch (Exception $e) {
+      watchdog('openid_connect', 'Exception during user info request: @message', array('@message' => $e->getMessage()), WATCHDOG_ERROR);
+      return FALSE;
+    }
   }
 
 }

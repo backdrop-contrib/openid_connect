@@ -12,20 +12,13 @@
 /**
  * Base path where to login providers can redirect in the OAuth2 flow.
  */
-define('OPENID_CONNECT_REDIRECT_PATH_BASE', 'openid_connect');
+define('OPENID_CONNECT_REDIRECT_PATH_BASE', 'openid-connect');
 
 /**
  * Implements hook_menu().
  */
 function openid_connect_menu() {
   $items = array();
-  
-  // Log the redirect path being registered
-  watchdog('openid_connect', 'Registering redirect path: @path', 
-    array('@path' => OPENID_CONNECT_REDIRECT_PATH_BASE . '/%client'), 
-    WATCHDOG_DEBUG
-  );
-  
   $items['admin/config/services/openid-connect'] = array(
     'title' => 'OpenID Connect',
     'description' => 'Configure OpenID Connect, choose active OpenID Connect clients etc.',
@@ -34,29 +27,16 @@ function openid_connect_menu() {
     'access arguments' => array('configure openid connect clients'),
     'file' => 'includes/openid_connect.admin.inc',
   );
-  
-  // Add explicit path for generic client
-  $items['openid-connect/generic'] = array(
-    'title' => 'OpenID Connect Generic Client redirect',
-    'page callback' => 'openid_connect_redirect_page',
-    'page arguments' => array('generic'),
-    'access callback' => 'openid_connect_redirect_access',
-    'access arguments' => array('generic'),
-    'type' => MENU_CALLBACK,
-    'file' => 'includes/openid_connect.pages.inc',
-  );
-  
-  // Keep the wildcard path for other clients
   $items[OPENID_CONNECT_REDIRECT_PATH_BASE . '/%client'] = array(
     'title' => 'OpenID Connect redirect page',
     'page callback' => 'openid_connect_redirect_page',
     'page arguments' => array(1),
     'access callback' => 'openid_connect_redirect_access',
     'access arguments' => array(1),
+    'access file' => 'includes/openid_connect.pages.inc',
     'type' => MENU_CALLBACK,
     'file' => 'includes/openid_connect.pages.inc',
   );
-  
   $items['user/%user/connected-accounts'] = array(
     'title' => 'Connected accounts',
     'page callback' => 'backdrop_get_form',
@@ -66,12 +46,6 @@ function openid_connect_menu() {
     'type' => MENU_LOCAL_TASK,
     'weight' => 5,
     'file' => 'includes/openid_connect.forms.inc',
-  );
-
-  // Log all registered paths
-  watchdog('openid_connect', 'Registered menu items: @items', 
-    array('@items' => print_r(array_keys($items), TRUE)), 
-    WATCHDOG_DEBUG
   );
 
   return $items;
@@ -231,9 +205,9 @@ function openid_connect_block_view($delta = '') {
  *   A state token that later can be validated to prevent request forgery.
  */
 function openid_connect_create_state_token() {
+  watchdog('openid_connect', 'Creating state token in openid_connect_create_state_token', array(), WATCHDOG_DEBUG);
   $state = backdrop_random_key();
   $_SESSION['openid_connect_state'] = $state;
-
   return $state;
 }
 
@@ -248,7 +222,10 @@ function openid_connect_create_state_token() {
  *   in the session.
  */
 function openid_connect_confirm_state_token($state_token) {
-  return isset($_SESSION['openid_connect_state']) && $state_token == $_SESSION['openid_connect_state'];
+  watchdog('openid_connect', 'Confirming state token in openid_connect_confirm_state_token', array(), WATCHDOG_DEBUG);
+  $result = isset($_SESSION['openid_connect_state']) && $state_token == $_SESSION['openid_connect_state'];
+  watchdog('openid_connect', 'State token confirmation result: %result', array('%result' => $result ? 'valid' : 'invalid'), WATCHDOG_DEBUG);
+  return $result;
 }
 
 /**
@@ -267,6 +244,7 @@ function openid_connect_connected_accounts_access($account) {
  * Saves user profile information into a user account.
  */
 function openid_connect_save_userinfo($account, $userinfo) {
+  watchdog('openid_connect', 'Starting to save userinfo in openid_connect_save_userinfo for user: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
   $config = config('openid_connect.settings');
   $account_wrapper = entity_metadata_wrapper('user', $account);
   $properties = $account_wrapper->getPropertyInfo();
@@ -277,11 +255,10 @@ function openid_connect_save_userinfo($account, $userinfo) {
     }
     $claim = $config->get('openid_connect_userinfo_mapping_property_' . $property_name);
     if ($claim && isset($userinfo[$claim])) {
-      // Set the user property, while ignoring exceptions from invalid values.
-
-
       try {
         $account_wrapper->{$property_name} = $userinfo[$claim];
+        watchdog('openid_connect', 'Set property %property to %value in openid_connect_save_userinfo', 
+          array('%property' => $property_name, '%value' => $userinfo[$claim]), WATCHDOG_DEBUG);
       }
       catch (EntityMetadataWrapperException $e) {
         watchdog_exception('openid_connect', $e);
@@ -289,20 +266,13 @@ function openid_connect_save_userinfo($account, $userinfo) {
     }
   }
 
-  // Save the display name additionally in the user account 'data', for use in
-
-
-  // openid_connect_username_alter().
-
-
   if (isset($userinfo['name'])) {
     $account->data['oidc_name'] = $userinfo['name'];
+    watchdog('openid_connect', 'Set oidc_name in openid_connect_save_userinfo: %name', array('%name' => $userinfo['name']), WATCHDOG_DEBUG);
   }
 
   $account_wrapper->save();
-
-  // Fetch and save user picture from the login provider.
-
+  watchdog('openid_connect', 'Saved account wrapper in openid_connect_save_userinfo', array(), WATCHDOG_DEBUG);
 
   if (config_get('system.performance', 'user_pictures') && $config->get('openid_connect_user_pictures') && !empty($userinfo['picture'])) {
     openid_connect_save_user_picture($account, $userinfo['picture']);
@@ -380,6 +350,7 @@ function openid_connect_save_user_picture($account, $picture_url) {
  *   The path to redirect to after login.
  */
 function openid_connect_login_user($account, $destination) {
+  watchdog('openid_connect', 'Starting login in openid_connect_login_user for user: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
   $form_state['uid'] = $account->uid;
   $form = array();
 
@@ -408,28 +379,25 @@ function openid_connect_login_user($account, $destination) {
     }
   }
   else {
+    watchdog('openid_connect', 'Proceeding with standard login', array(), WATCHDOG_DEBUG);
     user_login_submit($form, $form_state);
   }
+  watchdog('openid_connect', 'Completed login in openid_connect_login_user', array(), WATCHDOG_DEBUG);
 }
 
 /**
  * Save the current path in the session, for redirecting after authorization.
  */
 function openid_connect_save_destination() {
+  watchdog('openid_connect', 'Saving destination in openid_connect_save_destination', array(), WATCHDOG_DEBUG);
   $destination = backdrop_get_destination();
   $destination = $destination['destination'] == 'user/login' ? 'user' : $destination['destination'];
-
-  // The destination could contain query parameters. Ensure that they are
-
-
-  // preserved.
-
-
   $parsed = backdrop_parse_url($destination);
   $_SESSION['openid_connect_destination'] = array(
     $parsed['path'],
     array('query' => $parsed['query']),
   );
+  watchdog('openid_connect', 'Saved destination: %path', array('%path' => $parsed['path']), WATCHDOG_DEBUG);
 }
 
 /**
@@ -446,6 +414,7 @@ function openid_connect_save_destination() {
  *   The user object or FALSE on failure.
  */
 function openid_connect_create_user($sub, $userinfo, $client_name) {
+  watchdog('openid_connect', 'Creating new user in openid_connect_create_user for sub: %sub', array('%sub' => $sub), WATCHDOG_DEBUG);
   $edit = array(
     'name' => openid_connect_generate_username($sub, $userinfo, $client_name),
     'pass' => user_password(),
@@ -455,8 +424,10 @@ function openid_connect_create_user($sub, $userinfo, $client_name) {
     'openid_connect_client' => $client_name,
     'openid_connect_sub' => $sub,
   );
-
-  return user_save(NULL, $edit);
+  watchdog('openid_connect', 'User creation data: %data', array('%data' => print_r($edit, TRUE)), WATCHDOG_DEBUG);
+  $account = user_save(NULL, $edit);
+  watchdog('openid_connect', 'Created user with uid: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
+  return $account;
 }
 
 /**
@@ -469,18 +440,22 @@ function openid_connect_create_user($sub, $userinfo, $client_name) {
  *   A unique username.
  */
 function openid_connect_generate_username($sub, $userinfo, $client_name) {
+  watchdog('openid_connect', 'Generating username in openid_connect_generate_username for sub: %sub', array('%sub' => $sub), WATCHDOG_DEBUG);
   $name = 'oidc_' . $client_name . '_' . $sub;
   $candidates = array('preferred_username', 'name');
   foreach ($candidates as $candidate) {
     if (!empty($userinfo[$candidate])) {
       $name = $userinfo[$candidate];
+      watchdog('openid_connect', 'Using %candidate for username: %name', 
+        array('%candidate' => $candidate, '%name' => $name), WATCHDOG_DEBUG);
       break;
     }
   }
 
   backdrop_alter('openid_connect_new_username', $name, $userinfo, $client_name);
-
-  return openid_connect_sanitize_new_username($name);
+  $sanitized_name = openid_connect_sanitize_new_username($name);
+  watchdog('openid_connect', 'Generated sanitized username: %name', array('%name' => $sanitized_name), WATCHDOG_DEBUG);
+  return $sanitized_name;
 }
 
 /**
@@ -493,17 +468,8 @@ function openid_connect_generate_username($sub, $userinfo, $client_name) {
  *   The sanitized username.
  */
 function openid_connect_sanitize_new_username($name) {
-  // Remove leading, trailing, and duplicate whitespace.
-
-
+  watchdog('openid_connect', 'Sanitizing username in openid_connect_sanitize_new_username: %name', array('%name' => $name), WATCHDOG_DEBUG);
   $name = preg_replace('/ +/', ' ', trim($name));
-
-  // Remove illegal characters. These patterns are copied from the core function
-
-
-  // user_validate_name().
-
-
   $illegal1 = '/[^\x{80}-\x{F7} a-z0-9@_.\'-]/i';
   $illegal2 = '/[\x{80}-\x{A0}'
     . '\x{AD}'
@@ -517,23 +483,14 @@ function openid_connect_sanitize_new_username($name) {
     . '/u';
   $name = preg_replace($illegal1, '-', $name);
   $name = preg_replace($illegal2, '-', $name);
-
-  // Ensure the name will fit within the maximum length.
-
-
   $name = truncate_utf8($name, USERNAME_MAX_LENGTH, TRUE, FALSE, 20);
-
-  // Ensure there are no duplicates, by checking for the existence of the name,
-
-
-  // and adding some random digits at the end if necessary.
-
 
   for ($original = $name, $i = 1; openid_connect_username_exists($name); $i++) {
     $suffix = '_' . $i;
     $name = truncate_utf8($original, USERNAME_MAX_LENGTH - strlen($suffix)) . $suffix;
+    watchdog('openid_connect', 'Username exists, trying with suffix: %name', array('%name' => $name), WATCHDOG_DEBUG);
   }
-
+  watchdog('openid_connect', 'Final sanitized username: %name', array('%name' => $name), WATCHDOG_DEBUG);
   return $name;
 }
 
@@ -547,24 +504,24 @@ function openid_connect_sanitize_new_username($name) {
  *   TRUE if a user exists with the given name, FALSE otherwise.
  */
 function openid_connect_username_exists($name) {
-  return db_query('SELECT COUNT(*) FROM {users} WHERE name = :name', array(
+  $exists = db_query('SELECT COUNT(*) FROM {users} WHERE name = :name', array(
     ':name' => $name,
   ))->fetchField() > 0;
+  watchdog('openid_connect', 'Checking if username exists: %name - %exists', 
+    array('%name' => $name, '%exists' => $exists ? 'yes' : 'no'), WATCHDOG_DEBUG);
+  return $exists;
 }
 
 /**
  * Implements hook_username_alter().
  */
 function openid_connect_username_alter($name, $account) {
-  // Ensure that usernames are not displayed if they are email addresses, or if
-
-
-  // they are generated names starting with 'oidc_'.
-
-
+  watchdog('openid_connect', 'Altering username in openid_connect_username_alter: %name', array('%name' => $name), WATCHDOG_DEBUG);
   if (!empty($account->data['oidc_name']) && (strpos($name, 'oidc_') === 0 || strpos($name, '@'))) {
     $name = $account->data['oidc_name'];
+    watchdog('openid_connect', 'Using OIDC name instead: %name', array('%name' => $name), WATCHDOG_DEBUG);
   }
+  return $name;
 }
 
 /**
@@ -649,18 +606,22 @@ function openid_connect_set_password_access($account) {
  * Loads a user based on a sub-id and a login provider.
  */
 function openid_connect_user_load_by_sub($sub, $client_name) {
+  watchdog('openid_connect', 'Loading user by sub in openid_connect_user_load_by_sub: %sub', array('%sub' => $sub), WATCHDOG_DEBUG);
   $result = db_select('authmap', 'a')
     ->fields('a', array('uid', 'module'))
     ->condition('authname', $sub)
     ->condition('module', 'openid_connect_' . $client_name)
     ->execute()
     ->fetchAssoc();
+  
   if ($result) {
     $account = user_load($result['uid']);
     if (is_object($account)) {
+      watchdog('openid_connect', 'Found user with uid: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
       return $account;
     }
   }
+  watchdog('openid_connect', 'No user found for sub: %sub', array('%sub' => $sub), WATCHDOG_DEBUG);
   return FALSE;
 }
 
@@ -879,7 +840,10 @@ function openid_connect_get_connected_accounts($account) {
  *   The 'sub' property identifying the external account.
  */
 function openid_connect_connect_account($account, $client_name, $sub) {
+  watchdog('openid_connect', 'Connecting account in openid_connect_connect_account: uid=%uid, client=%client, sub=%sub', 
+    array('%uid' => $account->uid, '%client' => $client_name, '%sub' => $sub), WATCHDOG_DEBUG);
   user_set_authmaps($account, array('authname_openid_connect_' . $client_name => $sub));
+  watchdog('openid_connect', 'Successfully connected account', array(), WATCHDOG_DEBUG);
 }
 
 /**
@@ -893,6 +857,8 @@ function openid_connect_connect_account($account, $client_name, $sub) {
  *   The 'sub' property identifying the external account (optional).
  */
 function openid_connect_disconnect_account($account, $client_name, $sub = NULL) {
+  watchdog('openid_connect', 'Disconnecting account in openid_connect_disconnect_account: uid=%uid, client=%client', 
+    array('%uid' => $account->uid, '%client' => $client_name), WATCHDOG_DEBUG);
   $query = db_delete('authmap');
   $query->condition('uid', $account->uid)
     ->condition('module', 'openid_connect_' . $client_name);
@@ -900,6 +866,7 @@ function openid_connect_disconnect_account($account, $client_name, $sub = NULL) 
     $query->condition('authname', $sub);
   }
   $query->execute();
+  watchdog('openid_connect', 'Successfully disconnected account', array(), WATCHDOG_DEBUG);
 }
 
 /**
@@ -919,16 +886,21 @@ function openid_connect_disconnect_account($account, $client_name, $sub = NULL) 
  *   The sub, or FALSE if there was an error.
  */
 function openid_connect_extract_sub($user_data, $userinfo) {
+  watchdog('openid_connect', 'Extracting sub in openid_connect_extract_sub', array(), WATCHDOG_DEBUG);
   if (!isset($user_data['sub']) && !isset($userinfo['sub'])) {
+    watchdog('openid_connect', 'No sub found in either user_data or userinfo', array(), WATCHDOG_DEBUG);
     return FALSE;
   }
   elseif (!isset($user_data['sub'])) {
+    watchdog('openid_connect', 'Using sub from userinfo: %sub', array('%sub' => $userinfo['sub']), WATCHDOG_DEBUG);
     return $userinfo['sub'];
   }
   elseif (isset($userinfo['sub']) && $user_data['sub'] != $userinfo['sub']) {
+    watchdog('openid_connect', 'Sub mismatch between user_data and userinfo', array(), WATCHDOG_DEBUG);
     return FALSE;
   }
   else {
+    watchdog('openid_connect', 'Using sub from user_data: %sub', array('%sub' => $user_data['sub']), WATCHDOG_DEBUG);
     return $user_data['sub'];
   }
 }
@@ -947,70 +919,70 @@ function openid_connect_extract_sub($user_data, $userinfo) {
  *   TRUE on success, FALSE on failure.
  */
 function openid_connect_complete_authorization($client, $tokens, $destination) {
+  watchdog('openid_connect', 'Starting authorization in openid_connect_complete_authorization', array(), WATCHDOG_DEBUG);
   $config = config('openid_connect.settings');
   if (user_is_logged_in()) {
-    watchdog('openid_connect_' . $client->getName(), 'User already logged in during authorization', array(), WATCHDOG_ERROR);
+    watchdog('openid_connect', 'User already logged in, throwing exception', array(), WATCHDOG_DEBUG);
     throw new Exception('User already logged in');
   }
 
   $user_data = $client->decodeIdToken($tokens['id_token']);
-  watchdog('openid_connect_' . $client->getName(), 'Decoded ID token: @data', array('@data' => print_r($user_data, TRUE)), WATCHDOG_DEBUG);
-  
   $userinfo = $client->retrieveUserInfo($tokens['access_token']);
-  watchdog('openid_connect_' . $client->getName(), 'Retrieved user info: @info', array('@info' => print_r($userinfo, TRUE)), WATCHDOG_DEBUG);
+  watchdog('openid_connect', 'Retrieved user data and userinfo in openid_connect_complete_authorization', array(), WATCHDOG_DEBUG);
 
   if (empty($userinfo['email'])) {
-    watchdog('openid_connect_' . $client->getName(), 'No e-mail address provided by @provider', array('@provider' => $client->getLabel()), WATCHDOG_ERROR);
+    watchdog('openid_connect', 'No e-mail address provided by @provider', array('@provider' => $client->getLabel()), WATCHDOG_ERROR);
     return FALSE;
   }
 
   $sub = openid_connect_extract_sub($user_data, $userinfo);
   if (empty($sub)) {
-    watchdog('openid_connect_' . $client->getName(), 'No "sub" found from @provider', array('@provider' => $client->getLabel()), WATCHDOG_ERROR);
+    watchdog('openid_connect', 'No "sub" found from @provider', array('@provider' => $client->getLabel()), WATCHDOG_ERROR);
     return FALSE;
   }
-  watchdog('openid_connect_' . $client->getName(), 'Extracted sub: @sub', array('@sub' => $sub), WATCHDOG_DEBUG);
 
   // Check whether the e-mail address is valid.
   if (!filter_var($userinfo['email'], FILTER_VALIDATE_EMAIL)) {
-    watchdog('openid_connect_' . $client->getName(), 'Invalid email address: @email', array('@email' => $userinfo['email']), WATCHDOG_ERROR);
+    watchdog('openid_connect', 'Invalid email address in openid_connect_complete_authorization: %mail', array('%mail' => $userinfo['email']), WATCHDOG_DEBUG);
     backdrop_set_message(t('The e-mail address %mail is not valid.', array('%mail' => $userinfo['email'])), 'error');
     return FALSE;
   }
 
   $account = openid_connect_user_load_by_sub($sub, $client->getName());
+  watchdog('openid_connect', 'Loaded account by sub in openid_connect_complete_authorization: %uid', array('%uid' => $account ? $account->uid : 'not found'), WATCHDOG_DEBUG);
+  
   $results = module_invoke_all('openid_connect_pre_authorize', $tokens, $account, $userinfo, $client->getName());
+  watchdog('openid_connect', 'Pre-authorize hook results in openid_connect_complete_authorization: %results', array('%results' => print_r($results, TRUE)), WATCHDOG_DEBUG);
 
   // Deny access if any module returns FALSE.
   if (in_array(FALSE, $results, TRUE)) {
-    watchdog('openid_connect_' . $client->getName(), 'Login denied for @email via pre-authorize hook', array('@email' => $userinfo['email']), WATCHDOG_ERROR);
+    watchdog('openid_connect', 'Login denied for @email via pre-authorize hook.', array('@email' => $userinfo['email']), WATCHDOG_ERROR);
     return FALSE;
   }
 
   if ($account) {
-    watchdog('openid_connect_' . $client->getName(), 'Found existing account for user: @email', array('@email' => $userinfo['email']), WATCHDOG_DEBUG);
     // An existing account was found. Save user claims.
+    watchdog('openid_connect', 'Existing account found in openid_connect_complete_authorization: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
     if ($config->get('openid_connect_always_save_userinfo')) {
       openid_connect_save_userinfo($account, $userinfo);
     }
     $account_is_new = FALSE;
   }
   elseif ($account = user_load_by_mail($userinfo['email'])) {
-    watchdog('openid_connect_' . $client->getName(), 'Found existing account with matching email: @email', array('@email' => $userinfo['email']), WATCHDOG_DEBUG);
     // Check whether there is an e-mail address conflict.
+    watchdog('openid_connect', 'Account found by email in openid_connect_complete_authorization: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
     if ($config->get('openid_connect_connect_existing_users')) {
       openid_connect_connect_account($account, $client->getName(), $sub);
       $account_is_new = FALSE;
     }
     else {
-      watchdog('openid_connect_' . $client->getName(), 'Email conflict for @email - connection not allowed', array('@email' => $userinfo['email']), WATCHDOG_ERROR);
       backdrop_set_message(t('The e-mail address %email is already taken.', array('%email' => $userinfo['email'])), 'error');
       return FALSE;
     }
   }
   else {
-    watchdog('openid_connect_' . $client->getName(), 'Creating new account for user: @email', array('@email' => $userinfo['email']), WATCHDOG_DEBUG);
     // Create a new account.
+    watchdog('openid_connect', 'Creating new account in openid_connect_complete_authorization', array(), WATCHDOG_DEBUG);
     $account = openid_connect_create_user($sub, $userinfo, $client->getName());
     // Reload $account in case it has been altered in a user hook elsewhere.
     $account = user_load($account->uid);
@@ -1018,10 +990,11 @@ function openid_connect_complete_authorization($client, $tokens, $destination) {
     $account_is_new = TRUE;
   }
 
+  watchdog('openid_connect', 'Logging in user in openid_connect_complete_authorization: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
   openid_connect_login_user($account, $destination);
-  watchdog('openid_connect_' . $client->getName(), 'User @email logged in successfully', array('@email' => $userinfo['email']), WATCHDOG_INFO);
 
   module_invoke_all('openid_connect_post_authorize', $tokens, $account, $userinfo, $client->getName(), $account_is_new);
+  watchdog('openid_connect', 'Completed authorization in openid_connect_complete_authorization', array(), WATCHDOG_DEBUG);
 
   return TRUE;
 }
@@ -1038,47 +1011,50 @@ function openid_connect_complete_authorization($client, $tokens, $destination) {
  *   TRUE on success, FALSE on failure.
  */
 function openid_connect_connect_current_user($client, $tokens) {
+  watchdog('openid_connect', 'Starting connection in openid_connect_connect_current_user', array(), WATCHDOG_DEBUG);
   global $user;
   if (!$user->uid) {
+    watchdog('openid_connect', 'User not logged in in openid_connect_connect_current_user', array(), WATCHDOG_DEBUG);
     throw new Exception('User not logged in');
   }
 
   $user_data = $client->decodeIdToken($tokens['id_token']);
   $userinfo = $client->retrieveUserInfo($tokens['access_token']);
+  watchdog('openid_connect', 'Retrieved user data and userinfo in openid_connect_connect_current_user', array(), WATCHDOG_DEBUG);
 
   $provider_param = array('@provider' => $client->getLabel());
 
   if (empty($userinfo['email'])) {
     watchdog('openid_connect', 'No e-mail address provided by @provider', $provider_param, WATCHDOG_ERROR);
-
     return FALSE;
   }
 
   $sub = openid_connect_extract_sub($user_data, $userinfo);
   if (empty($sub)) {
     watchdog('openid_connect', 'No "sub" found from @provider', $provider_param, WATCHDOG_ERROR);
-
     return FALSE;
   }
 
   $account = openid_connect_user_load_by_sub($sub, $client->getName());
+  watchdog('openid_connect', 'Loaded account by sub in openid_connect_connect_current_user: %uid', array('%uid' => $account ? $account->uid : 'not found'), WATCHDOG_DEBUG);
+  
   $results = module_invoke_all('openid_connect_pre_authorize', $tokens, $account, $userinfo, $client->getName());
+  watchdog('openid_connect', 'Pre-authorize hook results in openid_connect_connect_current_user: %results', array('%results' => print_r($results, TRUE)), WATCHDOG_DEBUG);
 
   // Deny access if any module returns FALSE.
-
-
   if (in_array(FALSE, $results, TRUE)) {
     watchdog('openid_connect', 'Login denied for @email via pre-authorize hook.', array('@email' => $userinfo['email']), WATCHDOG_ERROR);
     return FALSE;
   }
 
   if ($account && $account->uid !== $user->uid) {
+    watchdog('openid_connect', 'Another user already connected in openid_connect_connect_current_user', array(), WATCHDOG_DEBUG);
     backdrop_set_message(t('Another user is already connected to this @provider account.', $provider_param), 'error');
-
     return FALSE;
   }
 
   if (!$account) {
+    watchdog('openid_connect', 'Connecting new account in openid_connect_connect_current_user: %uid', array('%uid' => $user->uid), WATCHDOG_DEBUG);
     $account = $user;
     openid_connect_connect_account($account, $client->getName(), $sub);
   }
@@ -1088,6 +1064,7 @@ function openid_connect_connect_current_user($client, $tokens) {
   }
 
   module_invoke_all('openid_connect_post_authorize', $tokens, $account, $userinfo, $client->getName(), FALSE);
+  watchdog('openid_connect', 'Completed connection in openid_connect_connect_current_user', array(), WATCHDOG_DEBUG);
 
   return TRUE;
 }

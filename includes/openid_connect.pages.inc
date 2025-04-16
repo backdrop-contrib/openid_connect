@@ -9,82 +9,95 @@
  * Page callback: Page whereto OpenID Connect login provider redirects.
  */
 function openid_connect_redirect_page($client_name) {
-  watchdog('openid_connect_' . $client_name, 'Step 9: Processing redirect page for client: @client', array('@client' => $client_name), WATCHDOG_INFO);
+  watchdog('openid_connect', 'Starting redirect page callback for client: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
   
-  // Get parameters from the session.
-  $parameters = isset($_SESSION['openid_connect_parameters']) ? $_SESSION['openid_connect_parameters'] : array();
-  watchdog('openid_connect_' . $client_name, 'Retrieved parameters from session: @params', array('@params' => print_r($parameters, TRUE)), WATCHDOG_DEBUG);
-  watchdog('openid_connect_' . $client_name, 'Step 10: Retrieved stored parameters from session', array(), WATCHDOG_INFO);
+  // Get state from URL parameter
+  $state = isset($_GET['state']) ? $_GET['state'] : '';
+  $code = isset($_GET['code']) ? $_GET['code'] : '';
   
-  // Get the client.
+  watchdog('openid_connect', 'Received parameters - State: %state, Code length: %code_length', 
+    array('%state' => $state, '%code_length' => strlen($code)), WATCHDOG_DEBUG);
+  
+  // Get parameters from the session, and then clean up.
+  $parameters = array(
+    'destination' => 'user',
+    'op' => 'login',
+    'connect_uid' => NULL,
+  );
+  foreach ($parameters as $key => $default) {
+    if (isset($_SESSION['openid_connect_' . $key])) {
+      $parameters[$key] = $_SESSION['openid_connect_' . $key];
+      unset($_SESSION['openid_connect_' . $key]);
+    }
+  }
+  $destination = $parameters['destination'];
+  watchdog('openid_connect', 'Retrieved parameters: %params', array('%params' => print_r($parameters, TRUE)), WATCHDOG_DEBUG);
+
   $client = openid_connect_get_client($client_name);
-  if (!$client || !isset($_GET['code'])) {
-    watchdog('openid_connect_' . $client_name, 'Invalid request - missing client or authorization code', array(), WATCHDOG_ERROR);
-    backdrop_set_message(t('Invalid request.'), 'error');
-    backdrop_goto();
+  if (!isset($_GET['error']) && (!$client || !isset($_GET['code']))) {
+    watchdog('openid_connect', 'Invalid request - missing client or code parameter', array(), WATCHDOG_DEBUG);
+    // In case we don't have an error, but the client could not be loaded or
+    // there is no state token specified, the URI is probably being visited
+    // outside of the login flow.
+    return MENU_NOT_FOUND;
   }
-  watchdog('openid_connect_' . $client_name, 'Step 11: Validated client and authorization code presence', array(), WATCHDOG_INFO);
 
-  // Validate the state token.
-  if (!openid_connect_confirm_state_token($_GET['state'])) {
-    watchdog('openid_connect_' . $client_name, 'State token validation failed. Expected: @expected, Received: @received', 
-      array(
-        '@expected' => $_SESSION['openid_connect_state'],
-        '@received' => $_GET['state']
-      ), 
-      WATCHDOG_ERROR
-    );
-    backdrop_set_message(t('Login failed. Invalid state token.'), 'error');
-    backdrop_goto();
-  }
-  watchdog('openid_connect_' . $client_name, 'Step 12: Successfully validated state token', array(), WATCHDOG_INFO);
+  $provider_param = array('@provider' => $client->getLabel());
 
-  // Check if we have an error response.
   if (isset($_GET['error'])) {
     if ($_GET['error'] == 'access_denied') {
-      watchdog('openid_connect_' . $client_name, 'User denied access to the authorization request', array(), WATCHDOG_WARNING);
-      backdrop_set_message(t('Login was denied.'), 'warning');
+      watchdog('openid_connect', 'Access denied by user for provider: %provider', array('%provider' => $client->getLabel()), WATCHDOG_DEBUG);
+      // If we have an "access_denied" error, that means the user hasn't granted
+      // the authorization for the claims.
+      backdrop_set_message(t('Logging in with @provider has been canceled.', $provider_param), 'warning');
     }
     else {
-      watchdog('openid_connect_' . $client_name, 'Authorization failed: @error', array('@error' => $_GET['error']), WATCHDOG_ERROR);
-      backdrop_set_message(t('Login failed. Error: @error', array('@error' => $_GET['error'])), 'error');
+      // Any other error should be logged. E.g. invalid scope.
+      $variables = array(
+        '@error' => $_GET['error'],
+        '@details' => isset($_GET['error_description']) ? $_GET['error_description'] : t('None'),
+      );
+      watchdog('openid_connect_' . $client_name, 'Authorization failed: @error. Details: @details', $variables, WATCHDOG_ERROR);
     }
-    backdrop_goto();
-  }
-  watchdog('openid_connect_' . $client_name, 'Step 13: No authorization errors detected', array(), WATCHDOG_INFO);
-
-  // Get the tokens from the client.
-  $tokens = $client->retrieveTokens($_GET['code']);
-  if (isset($tokens['error'])) {
-    watchdog('openid_connect_' . $client_name, 'Error retrieving tokens: @error', array('@error' => $tokens['error']), WATCHDOG_ERROR);
-    backdrop_set_message(t('Login failed. Error: @error', array('@error' => $tokens['error'])), 'error');
-    backdrop_goto();
-  }
-  watchdog('openid_connect_' . $client_name, 'Step 14: Successfully retrieved tokens from client', array(), WATCHDOG_INFO);
-
-  // Complete the authorization.
-  $destination = isset($parameters['destination']) ? $parameters['destination'] : '';
-  if (openid_connect_complete_authorization($client, $tokens, $destination)) {
-    watchdog('openid_connect_' . $client_name, 'Step 15: Authorization completed successfully', array(), WATCHDOG_INFO);
-    backdrop_set_message(t('You have been logged in.'));
   }
   else {
-    watchdog('openid_connect_' . $client_name, 'Authorization completion failed', array(), WATCHDOG_ERROR);
-    backdrop_set_message(t('Login failed.'), 'error');
+    watchdog('openid_connect', 'Processing login/connect operation for provider: %provider', array('%provider' => $client->getLabel()), WATCHDOG_DEBUG);
+    // Process the login or connect operations.
+    $tokens = $client->retrieveTokens($_GET['code']);
+    
+    if ($tokens) {
+      watchdog('openid_connect', 'Successfully retrieved tokens for provider: %provider', array('%provider' => $client->getLabel()), WATCHDOG_DEBUG);
+      if ($parameters['op'] === 'login') {
+        watchdog('openid_connect', 'Starting login authorization for provider: %provider', array('%provider' => $client->getLabel()), WATCHDOG_DEBUG);
+        $success = openid_connect_complete_authorization($client, $tokens, $destination);
+        if (!$success) {
+          backdrop_set_message(t('Logging in with @provider could not be completed due to an error.', $provider_param), 'error');
+        }
+      }
+      elseif ($parameters['op'] === 'connect' && $parameters['connect_uid'] === $GLOBALS['user']->uid) {
+        watchdog('openid_connect', 'Starting account connection for provider: %provider', array('%provider' => $client->getLabel()), WATCHDOG_DEBUG);
+        $success = openid_connect_connect_current_user($client, $tokens);
+        if ($success) {
+          backdrop_set_message(t('Account successfully connected with @provider.', $provider_param));
+        }
+        else {
+          backdrop_set_message(t('Connecting with @provider could not be completed due to an error.', $provider_param), 'error');
+        }
+      }
+    }
+    else {
+      watchdog('openid_connect', 'Failed to retrieve tokens for provider: %provider', array('%provider' => $client->getLabel()), WATCHDOG_ERROR);
+    }
   }
 
-  // Clear the session variables.
-  unset($_SESSION['openid_connect_parameters']);
-  unset($_SESSION['openid_connect_state']);
-
-  // Redirect to the destination.
-  if ($destination) {
-    watchdog('openid_connect_' . $client_name, 'Step 16: Redirecting to destination: @destination', array('@destination' => $destination), WATCHDOG_INFO);
+  // It's possible to set 'options' in the redirect destination.
+  if (is_array($destination)) {
+    watchdog('openid_connect', 'Redirecting to array destination: %path', array('%path' => $destination[0]), WATCHDOG_DEBUG);
+    backdrop_goto($destination[0], $destination[1]);
+  }
+  else {
+    watchdog('openid_connect', 'Redirecting to destination: %path', array('%path' => $destination), WATCHDOG_DEBUG);
     backdrop_goto($destination);
-  }
-  else {
-    watchdog('openid_connect_' . $client_name, 'Step 16: No destination specified, redirecting to user page', array(), WATCHDOG_INFO);
-    backdrop_goto('user');
   }
 }
 
@@ -92,19 +105,33 @@ function openid_connect_redirect_page($client_name) {
  * Access callback for the redirect page.
  */
 function openid_connect_redirect_access($client_name) {
+  watchdog('openid_connect', 'Checking redirect access for client: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
+  // Check if we have a state token to validate.
+  if (!isset($_SESSION['openid_connect_state'])) {
+    watchdog('openid_connect', 'No state token found in session', array(), WATCHDOG_DEBUG);
+    return FALSE;
+  }
+
+  // Check if the state token matches the one in the session.
+  if (!isset($_GET['state']) || $_GET['state'] !== $_SESSION['openid_connect_state']) {
+    watchdog('openid_connect', 'State token mismatch', array(), WATCHDOG_DEBUG);
+    return FALSE;
+  }
+
   // Check if the client exists and is enabled.
   $client = openid_connect_get_client($client_name);
   if (!$client) {
-    watchdog('openid_connect', 'Access denied: Client @client does not exist', array('@client' => $client_name), WATCHDOG_WARNING);
+    watchdog('openid_connect', 'Client not found: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
     return FALSE;
   }
 
   $config = config('openid_connect.settings');
   $enabled_clients = $config->get('openid_connect_clients_enabled');
   if (!isset($enabled_clients[$client_name]) || !$enabled_clients[$client_name]) {
-    watchdog('openid_connect', 'Access denied: Client @client is not enabled', array('@client' => $client_name), WATCHDOG_WARNING);
+    watchdog('openid_connect', 'Client not enabled: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
     return FALSE;
   }
 
+  watchdog('openid_connect', 'Access granted for client: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
   return TRUE;
 }
