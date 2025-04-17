@@ -6,7 +6,7 @@ Some of this code was generated using https://www.cursor.com/ AI editor
 
 
 The OpenID Connect module provides a pluggable client implementation for the
-OpenID Connect protocol.
+OpenID Connect protocol. https://openid.net/specs/openid-connect-core-1_0.html#StandardClaims
 
 
 
