@@ -3,6 +3,22 @@
 /**
  * @file
  * A pluggable client implementation for the OpenID Connect protocol.
+ * 
+ * Authentication Flow:
+ * 1. Initial Authorization Request
+ *    - User clicks login button
+ *    - authorize() method constructs authorization URL
+ *    - User is redirected to provider's authorization endpoint
+ * 
+ * 2. Token Exchange
+ *    - Provider redirects back to our redirect page
+ *    - retrieveTokens() exchanges authorization code for tokens
+ *    - ID token is validated and claims are extracted
+ * 
+ * 3. User Authentication
+ *    - User info is retrieved from userinfo endpoint
+ *    - User is either logged in or registered
+ *    - User session is established
  */
 
 // phpcs:disable Backdrop.Commenting.FunctionComment.TypeHintMissing
@@ -16,6 +32,11 @@ define('OPENID_CONNECT_REDIRECT_PATH_BASE', 'openid-connect');
 
 /**
  * Implements hook_menu().
+ * 
+ * Defines routes for:
+ * - Admin configuration
+ * - OAuth redirect handler (critical for authentication flow)
+ * - User account connection management
  */
 function openid_connect_menu() {
   $items = array();
@@ -88,6 +109,11 @@ function openid_connect_config_info() {
  *
  * @return OpenIDConnectClientInterface
  *   Client instance.
+ * 
+ * This is a critical function in the authentication flow as it:
+ * 1. Loads the appropriate client plugin
+ * 2. Retrieves client configuration
+ * 3. Creates an instance of the client class
  */
 function openid_connect_get_client($client_name) {
   $clients = backdrop_static(__FUNCTION__);
@@ -126,6 +152,11 @@ function openid_connect_get_plugin($client_name) {
  *
  * @param bool $enabled_only
  *   Whether to return only the plugins enabled by the administrator.
+ * 
+ * This function:
+ * 1. Discovers available client plugins
+ * 2. Filters based on enabled status if requested
+ * 3. Returns plugin definitions for client instantiation
  */
 function openid_connect_get_plugins($enabled_only = FALSE) {
   $plugins = &backdrop_static(__FUNCTION__);
@@ -174,6 +205,8 @@ function openid_connect_get_plugins($enabled_only = FALSE) {
 
 /**
  * Implements hook_block_info().
+ * 
+ * Provides the login block that initiates the authentication flow.
  */
 function openid_connect_block_info() {
   return array(
@@ -186,6 +219,8 @@ function openid_connect_block_info() {
 
 /**
  * Implements hook_block_view().
+ * 
+ * Renders the login form that starts the authentication process.
  */
 function openid_connect_block_view($delta = '') {
   if ($delta == 'openid_connect_login' && user_is_anonymous()) {
@@ -527,8 +562,16 @@ function openid_connect_username_alter($name, $account) {
 /**
  * Implements hook_user_insert().
  */
-function openid_connect_user_insert($edit, $account, $category) {
+function openid_connect_user_insert($edit, $account = NULL, $category = NULL) {
   if (isset($edit['openid_connect_client'])) {
+    watchdog('openid_connect', 'Connecting user %uid to OpenID Connect client %client with sub %sub', 
+      array(
+        '%uid' => $account->uid,
+        '%client' => $edit['openid_connect_client'],
+        '%sub' => $edit['openid_connect_sub']
+      ), 
+      WATCHDOG_DEBUG
+    );
     openid_connect_connect_account($account, $edit['openid_connect_client'], $edit['openid_connect_sub']);
   }
 }

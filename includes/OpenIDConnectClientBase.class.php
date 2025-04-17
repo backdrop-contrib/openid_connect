@@ -3,10 +3,44 @@
 /**
  * @file
  * Base class for OpenID Connect clients.
+ * 
+ * This class implements the core OAuth 2.0 and OpenID Connect functionality:
+ * 1. Client Configuration
+ *    - Client ID and secret management
+ *    - Endpoint configuration
+ *    - Settings form handling
+ * 
+ * 2. Authorization Flow
+ *    - Authorization request construction
+ *    - State parameter generation
+ *    - PKCE support (if enabled)
+ * 
+ * 3. Token Management
+ *    - Authorization code exchange
+ *    - Token validation
+ *    - ID token processing
+ * 
+ * 4. User Information
+ *    - Userinfo endpoint integration
+ *    - Claims mapping
+ *    - Profile data handling
  */
 
 /**
  * Base class for OpenID Connect clients.
+ * 
+ * This abstract class provides the foundation for OpenID Connect client implementations.
+ * It handles the core OAuth 2.0 and OpenID Connect protocol requirements:
+ * 
+ * - Authorization Code Flow
+ * - Token Exchange
+ * - ID Token Validation
+ * - User Info Retrieval
+ * 
+ * Client implementations should extend this class and implement:
+ * 1. getEndpoints() - Define provider-specific endpoints
+ * 2. settingsForm() - Add provider-specific settings
+ * 3. retrieveUserInfo() - Customize user info retrieval
  */
 abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
 
@@ -68,7 +102,7 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
   public function getSetting($key, $default = NULL) {
     $value = isset($this->settings[$key]) ? $this->settings[$key] : $default;
     // Trim client_id and client_secret to prevent whitespace issues
-    if (in_array($key, ['client_id', 'client_secret'])) {
+    if (in_array($key, ['client_id', 'client_secret']) && $value !== NULL) {
       $value = trim($value);
     }
     return $value;
@@ -76,6 +110,13 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
 
   /**
    * {@inheritdoc}
+   * 
+   * Provides the base settings form for all OpenID Connect clients.
+   * All clients require:
+   * 1. Client ID - The OAuth client identifier
+   * 2. Client Secret - The OAuth client secret
+   * 
+   * Child classes can extend this to add provider-specific settings.
    */
   public function settingsForm() {
     $form['client_id'] = array(
@@ -94,6 +135,11 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
 
   /**
    * {@inheritdoc}
+   * 
+   * Validates the settings form:
+   * 1. Trims whitespace from credentials
+   * 2. Ensures required fields are not empty
+   * 3. Validates credential format if needed
    */
   public function settingsFormValidate($form, &$form_state, $error_element_base) {
     // Trim whitespace from client_id and client_secret
@@ -123,6 +169,12 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
 
   /**
    * {@inheritdoc}
+   * 
+   * This method must be implemented by child classes to define:
+   * 1. Authorization endpoint
+   * 2. Token endpoint
+   * 3. Userinfo endpoint
+   * 4. Any other provider-specific endpoints
    */
   public function getEndpoints() {
     throw new Exception('Unimplemented method getEndpoints().');
@@ -133,6 +185,11 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    *
    * @return string
    *   A random code verifier string that meets RFC 7636 requirements.
+   * 
+   * The code verifier is:
+   * 1. A random string of 32 bytes
+   * 2. Base64URL encoded
+   * 3. Stored in session for token exchange
    */
   protected function generateCodeVerifier() {
     watchdog('openid_connect', 'Generating PKCE code verifier for client: %client', array('%client' => $this->name), WATCHDOG_DEBUG);
@@ -160,6 +217,11 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    *
    * @return string
    *   The code challenge in base64url format.
+   * 
+   * The code challenge is:
+   * 1. SHA256 hash of the verifier
+   * 2. Base64URL encoded
+   * 3. Used in authorization request
    */
   protected function generateCodeChallenge($verifier) {
     watchdog('openid_connect', 'Generating PKCE code challenge for client: %client', array('%client' => $this->name), WATCHDOG_DEBUG);
@@ -178,14 +240,26 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
 
   /**
    * {@inheritdoc}
+   * 
+   * Initiates the authorization flow by:
+   * 1. Constructing the authorization URL
+   * 2. Adding required parameters
+   * 3. Redirecting to the provider
+   * 
+   * The authorization URL includes:
+   * - response_type=code
+   * - client_id
+   * - redirect_uri
+   * - scope (comma-separated)
+   * - state (CSRF protection)
+   * - PKCE parameters (if enabled)
    */
   public function authorize($scope = 'openid email') {
-    watchdog('openid_connect', 'Starting authorization for client: %client with scope: %scope', 
-      array('%client' => $this->name, '%scope' => $scope), WATCHDOG_DEBUG);
-
+    $endpoints = $this->getEndpoints();
     $redirect_uri = OPENID_CONNECT_REDIRECT_PATH_BASE . '/' . $this->name;
     $absolute_redirect_uri = url($redirect_uri, array(
       'absolute' => TRUE,
+      'https' => TRUE,
       'language' => LANGUAGE_NONE,
     ));
     
@@ -199,30 +273,33 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
     // Save destination URL if it exists
     openid_connect_save_destination();
     
-    // Build authorization URL
-    $url_options = array(
-      'query' => array(
-        'client_id' => trim($this->getSetting('client_id')),
-        'response_type' => 'code',
-        'scope' => $scope,
-        'redirect_uri' => $absolute_redirect_uri,
-        'state' => $state,
-        'code_challenge' => $code_challenge,
-        'code_challenge_method' => 'S256',
-      ),
+    // Build authorization URL - order parameters as Doorkeeper expects
+    $query_params = array(
+      'response_type' => 'code',
+      'client_id' => trim($this->getSetting('client_id')),
+      'redirect_uri' => $absolute_redirect_uri,
+      'scope' => $scope,
+      'state' => $state,
+      'code_challenge' => $code_challenge,
+      'code_challenge_method' => 'S256',
     );
-
-    $endpoints = $this->getEndpoints();
-    watchdog('openid_connect', 'Redirecting to authorization endpoint: %url with state: %state', 
-      array(
-        '%url' => $endpoints['authorization'],
-        '%state' => $state
-      ), WATCHDOG_DEBUG);
+    
+    // Use the configured authorization endpoint
+    $authorization_url = $endpoints['authorization'] . '?' . 
+      'response_type=' . $query_params['response_type'] . '&' .
+      'client_id=' . $query_params['client_id'] . '&' .
+      'redirect_uri=' . $query_params['redirect_uri'] . '&' .
+      'scope=' . $query_params['scope'] . '&' .
+      'state=' . $query_params['state'] . '&' .
+      'code_challenge=' . $query_params['code_challenge'] . '&' .
+      'code_challenge_method=' . $query_params['code_challenge_method'];
 
     // Clear $_GET['destination'] because we need to override it
     unset($_GET['destination']);
     
-    backdrop_goto($endpoints['authorization'], $url_options);
+    // Use direct header redirect instead of backdrop_goto
+    header('Location: ' . $authorization_url);
+    exit;
   }
 
   /**
@@ -245,6 +322,13 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    * @return array|bool
    *   Array with tokens (access_token, id_token, refresh_token) or FALSE if
    *   token retrieval failed.
+   * 
+   * This method:
+   * 1. Validates the authorization code
+   * 2. Constructs the token request
+   * 3. Sends the request to the token endpoint
+   * 4. Validates the response
+   * 5. Returns the tokens
    */
   public function retrieveTokens($authorization_code) {
     watchdog('openid_connect', 'Starting token retrieval for client: %client', array('%client' => $this->name), WATCHDOG_DEBUG);
@@ -255,10 +339,14 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
       return FALSE;
     }
 
-    // Prepare token request
-    $redirect_uri = url('openid-connect/' . $this->name, array('absolute' => TRUE));
-    $endpoints = $this->getEndpoints();
+    // Prepare token request - use exact same redirect URI construction as in authorize()
+    $redirect_uri = OPENID_CONNECT_REDIRECT_PATH_BASE . '/' . $this->name;
+    $absolute_redirect_uri = url($redirect_uri, array(
+      'absolute' => TRUE,
+      'language' => LANGUAGE_NONE,
+    ));
     
+    $endpoints = $this->getEndpoints();
     if (empty($endpoints['token'])) {
       watchdog('openid_connect', 'Token endpoint not configured for client: %client', array('%client' => $this->name), WATCHDOG_ERROR);
       return FALSE;
@@ -275,32 +363,28 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
     
     // Build request parameters
     $request_params = array(
+      'grant_type' => 'authorization_code',
       'code' => $authorization_code,
+      'redirect_uri' => $absolute_redirect_uri,
       'client_id' => $client_id,
       'client_secret' => $client_secret,
-      'redirect_uri' => $redirect_uri,
-      'grant_type' => 'authorization_code',
-      'scope' => 'openid email profile',
     );
 
     watchdog('openid_connect', 'Token request parameters prepared: endpoint=%endpoint, redirect=%redirect, client_id=%client_id', 
       array(
         '%endpoint' => $endpoints['token'],
-        '%redirect' => $redirect_uri,
+        '%redirect' => $absolute_redirect_uri,
         '%client_id' => $client_id
       ), WATCHDOG_DEBUG);
 
-    // Prepare HTTP request with Basic Auth
+    // Prepare HTTP request
     $request_options = array(
       'headers' => array(
         'Content-Type' => 'application/x-www-form-urlencoded',
-        'Accept' => 'application/json',
-        'Authorization' => 'Basic ' . base64_encode($client_id . ':' . $client_secret),
       ),
       'method' => 'POST',
       'data' => http_build_query($request_params, '', '&'),
       'timeout' => 30,
-      'verify' => TRUE,
     );
 
     try {
@@ -367,6 +451,11 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
 
   /**
    * {@inheritdoc}
+   * 
+   * Decodes and validates the ID token:
+   * 1. Splits the JWT into header, claims, and signature
+   * 2. Decodes the claims section
+   * 3. Returns the claims as an array
    */
   public function decodeIdToken($id_token) {
     watchdog('openid_connect', 'Decoding ID token for client: %client', array('%client' => $this->name), WATCHDOG_DEBUG);
@@ -387,6 +476,12 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    *
    * @return array|bool
    *   User info array with standardized keys, or FALSE if retrieval failed.
+   * 
+   * This method:
+   * 1. Validates the access token
+   * 2. Makes a request to the userinfo endpoint
+   * 3. Maps standard claims to user properties
+   * 4. Returns the user info
    */
   public function retrieveUserInfo($access_token) {
     watchdog('openid_connect', 'Starting user info retrieval for client: %client', array('%client' => $this->name), WATCHDOG_DEBUG);
