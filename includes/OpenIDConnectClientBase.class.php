@@ -255,7 +255,12 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    * - PKCE parameters (if enabled)
    */
   public function authorize($scope = 'openid email') {
+    watchdog('openid_connect', 'Starting authorization for client: %client with scope: %scope', 
+      array('%client' => $this->name, '%scope' => $scope), WATCHDOG_DEBUG);
+    
     $endpoints = $this->getEndpoints();
+    watchdog('openid_connect', 'Endpoints loaded: %endpoints', array('%endpoints' => print_r($endpoints, TRUE)), WATCHDOG_DEBUG);
+    
     $redirect_uri = OPENID_CONNECT_REDIRECT_PATH_BASE . '/' . $this->name;
     $absolute_redirect_uri = url($redirect_uri, array(
       'absolute' => TRUE,
@@ -263,17 +268,26 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
       'language' => LANGUAGE_NONE,
     ));
     
+    watchdog('openid_connect', 'Constructed redirect URI: %uri', array('%uri' => $absolute_redirect_uri), WATCHDOG_DEBUG);
+    
     // Generate and store state token
     $state = openid_connect_create_state_token();
+    $_SESSION['openid_connect_state'] = $state;
+    
+    watchdog('openid_connect', 'Generated state token: %state', array('%state' => $state), WATCHDOG_DEBUG);
     
     // Generate PKCE code verifier and challenge
     $code_verifier = $this->generateCodeVerifier();
     $code_challenge = $this->generateCodeChallenge($code_verifier);
+    $_SESSION['openid_connect_code_verifier'] = $code_verifier;
+    
+    watchdog('openid_connect', 'Generated PKCE parameters - Verifier length: %vlen, Challenge: %challenge', 
+      array('%vlen' => strlen($code_verifier), '%challenge' => $code_challenge), WATCHDOG_DEBUG);
     
     // Save destination URL if it exists
     openid_connect_save_destination();
     
-    // Build authorization URL - order parameters as Doorkeeper expects
+    // Build authorization URL
     $query_params = array(
       'response_type' => 'code',
       'client_id' => trim($this->getSetting('client_id')),
@@ -284,18 +298,24 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
       'code_challenge_method' => 'S256',
     );
     
+    watchdog('openid_connect', 'Authorization parameters: %params', array('%params' => print_r($query_params, TRUE)), WATCHDOG_DEBUG);
+    
     // Use the configured authorization endpoint
     $authorization_url = $endpoints['authorization'] . '?' . 
       'response_type=' . $query_params['response_type'] . '&' .
       'client_id=' . $query_params['client_id'] . '&' .
-      'redirect_uri=' . $query_params['redirect_uri'] . '&' .
-      'scope=' . $query_params['scope'] . '&' .
+      'redirect_uri=' . urlencode($query_params['redirect_uri']) . '&' .
+      'scope=' . urlencode($query_params['scope']) . '&' .
       'state=' . $query_params['state'] . '&' .
       'code_challenge=' . $query_params['code_challenge'] . '&' .
       'code_challenge_method=' . $query_params['code_challenge_method'];
 
+    watchdog('openid_connect', 'Final authorization URL: %url', array('%url' => $authorization_url), WATCHDOG_DEBUG);
+
     // Clear $_GET['destination'] because we need to override it
     unset($_GET['destination']);
+    
+    watchdog('openid_connect', 'Redirecting to authorization URL', array(), WATCHDOG_DEBUG);
     
     // Use direct header redirect instead of backdrop_goto
     header('Location: ' . $authorization_url);
