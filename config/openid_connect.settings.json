@@ -5,7 +5,7 @@
     },
     "openid_connect_always_save_userinfo": true,
     "openid_connect_user_pictures": true,
-    "openid_connect_connect_existing_users": false,
+    "openid_connect_connect_existing_users": true,
     "openid_connect_userinfo_mapping_claims": [],
     "openid_connect_client_generic": {
         "client_id": "",

@@ -48,13 +48,11 @@ function openid_connect_menu() {
     'access arguments' => array('configure openid connect clients'),
     'file' => 'includes/openid_connect.admin.inc',
   );
-  $items[OPENID_CONNECT_REDIRECT_PATH_BASE . '/%client'] = array(
+  $items['openid-connect/%'] = array(
     'title' => 'OpenID Connect redirect page',
     'page callback' => 'openid_connect_redirect_page',
     'page arguments' => array(1),
-    'access callback' => 'openid_connect_redirect_access',
-    'access arguments' => array(1),
-    'access file' => 'includes/openid_connect.pages.inc',
+    'access callback' => TRUE,
     'type' => MENU_CALLBACK,
     'file' => 'includes/openid_connect.pages.inc',
   );
@@ -240,9 +238,14 @@ function openid_connect_block_view($delta = '') {
  *   A state token that later can be validated to prevent request forgery.
  */
 function openid_connect_create_state_token() {
-  watchdog('openid_connect', 'Creating state token in openid_connect_create_state_token', array(), WATCHDOG_DEBUG);
   $state = backdrop_random_key();
   $_SESSION['openid_connect_state'] = $state;
+  watchdog('openid_connect', 'Created state token: %state. Session ID: %sid, Session data: %session', 
+    array(
+      '%state' => $state,
+      '%sid' => session_id(),
+      '%session' => print_r($_SESSION, TRUE)
+    ), WATCHDOG_DEBUG);
   return $state;
 }
 
@@ -257,9 +260,34 @@ function openid_connect_create_state_token() {
  *   in the session.
  */
 function openid_connect_confirm_state_token($state_token) {
-  watchdog('openid_connect', 'Confirming state token in openid_connect_confirm_state_token', array(), WATCHDOG_DEBUG);
-  $result = isset($_SESSION['openid_connect_state']) && $state_token == $_SESSION['openid_connect_state'];
-  watchdog('openid_connect', 'State token confirmation result: %result', array('%result' => $result ? 'valid' : 'invalid'), WATCHDOG_DEBUG);
+  watchdog('openid_connect', 'Validating state token. Received: %received, Session ID: %sid, Session data: %session', 
+    array(
+      '%received' => $state_token,
+      '%sid' => session_id(),
+      '%session' => print_r($_SESSION, TRUE)
+    ), WATCHDOG_DEBUG);
+    
+  if (!isset($_SESSION['openid_connect_state'])) {
+    watchdog('openid_connect', 'No state token found in session. Session ID: %sid', 
+      array('%sid' => session_id()), WATCHDOG_ERROR);
+    return FALSE;
+  }
+  
+  $result = $state_token === $_SESSION['openid_connect_state'];
+  if (!$result) {
+    watchdog('openid_connect', 'State token mismatch. Expected: %expected, Received: %received', 
+      array(
+        '%expected' => $_SESSION['openid_connect_state'],
+        '%received' => $state_token
+      ), WATCHDOG_ERROR);
+  }
+  else {
+    watchdog('openid_connect', 'State token validation successful', array(), WATCHDOG_DEBUG);
+  }
+  
+  // Clear the state token after validation
+  unset($_SESSION['openid_connect_state']);
+  
   return $result;
 }
 
@@ -462,6 +490,12 @@ function openid_connect_create_user($sub, $userinfo, $client_name) {
   watchdog('openid_connect', 'User creation data: %data', array('%data' => print_r($edit, TRUE)), WATCHDOG_DEBUG);
   $account = user_save(NULL, $edit);
   watchdog('openid_connect', 'Created user with uid: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
+  
+  // Connect the user to the OpenID Connect provider
+  openid_connect_connect_account($account, $client_name, $sub);
+  watchdog('openid_connect', 'Connected user %uid to OpenID Connect provider %client', 
+    array('%uid' => $account->uid, '%client' => $client_name), WATCHDOG_DEBUG);
+    
   return $account;
 }
 

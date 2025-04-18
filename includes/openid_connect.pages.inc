@@ -24,6 +24,11 @@
  *   The name of the OpenID Connect client plugin.
  */
 function openid_connect_redirect_page($client_name) {
+  // Start session if not already started
+  if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+  }
+  
   // Enhanced debugging - Log all request details
   watchdog('openid_connect', 'Starting redirect page callback for client: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
   watchdog('openid_connect', 'REQUEST details: %request', array('%request' => print_r($_REQUEST, TRUE)), WATCHDOG_DEBUG);
@@ -38,6 +43,8 @@ function openid_connect_redirect_page($client_name) {
   // Validate state
   if (!openid_connect_confirm_state_token($state)) {
     watchdog('openid_connect', 'State token validation failed', array(), WATCHDOG_ERROR);
+    backdrop_set_message(t('Invalid state parameter. Please try again.'), 'error');
+    backdrop_goto('user');
     return FALSE;
   }
   watchdog('openid_connect', 'State token validated successfully', array(), WATCHDOG_DEBUG);
@@ -78,16 +85,19 @@ function openid_connect_redirect_page($client_name) {
   watchdog('openid_connect', 'Client loaded successfully: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
 
   // Exchange code for tokens
+  watchdog('openid_connect', 'Starting token exchange for client: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
   $tokens = $client->retrieveTokens($code);
   if (!$tokens) {
     watchdog('openid_connect', 'Failed to retrieve tokens for client: %client', array('%client' => $client_name), WATCHDOG_ERROR);
     backdrop_set_message(t('Could not retrieve tokens.'), 'error');
     backdrop_goto($path, $options);
   }
-  watchdog('openid_connect', 'Retrieved tokens successfully for client: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
+  watchdog('openid_connect', 'Retrieved tokens successfully for client: %client. Tokens: %tokens', 
+    array('%client' => $client_name, '%tokens' => print_r($tokens, TRUE)), WATCHDOG_DEBUG);
 
   // Complete authorization
   try {
+    watchdog('openid_connect', 'Starting authorization completion for client: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
     $success = openid_connect_complete_authorization($client, $tokens, $destination);
     if ($success) {
       watchdog('openid_connect', 'Authorization completed successfully for client: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
@@ -100,11 +110,9 @@ function openid_connect_redirect_page($client_name) {
   }
   catch (Exception $e) {
     watchdog('openid_connect', 'Exception during authorization: @message', array('@message' => $e->getMessage()), WATCHDOG_ERROR);
-    backdrop_set_message(t('Login failed: @message', array('@message' => $e->getMessage())), 'error');
+    backdrop_set_message(t('An error occurred during login.'), 'error');
   }
 
-  // Final redirect
-  watchdog('openid_connect', 'Redirecting to: %path', array('%path' => $path), WATCHDOG_DEBUG);
   backdrop_goto($path, $options);
 }
 

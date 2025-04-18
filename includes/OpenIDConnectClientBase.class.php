@@ -261,7 +261,8 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
     $endpoints = $this->getEndpoints();
     watchdog('openid_connect', 'Endpoints loaded: %endpoints', array('%endpoints' => print_r($endpoints, TRUE)), WATCHDOG_DEBUG);
     
-    $redirect_uri = OPENID_CONNECT_REDIRECT_PATH_BASE . '/' . $this->name;
+    // Use the same path as defined in hook_menu()
+    $redirect_uri = 'openid-connect/' . $this->name;
     $absolute_redirect_uri = url($redirect_uri, array(
       'absolute' => TRUE,
       'https' => TRUE,
