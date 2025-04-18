@@ -282,8 +282,21 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
     $code_challenge = $this->generateCodeChallenge($code_verifier);
     $_SESSION['openid_connect_code_verifier'] = $code_verifier;
     
-    watchdog('openid_connect', 'Generated PKCE parameters - Verifier length: %vlen, Challenge: %challenge', 
-      array('%vlen' => strlen($code_verifier), '%challenge' => $code_challenge), WATCHDOG_DEBUG);
+    watchdog('openid_connect', 'Generated PKCE parameters - Verifier: %verifier, Challenge: %challenge', 
+      array(
+        '%verifier' => $code_verifier,
+        '%challenge' => $code_challenge
+      ), WATCHDOG_DEBUG);
+
+    // Verify the challenge matches the verifier
+    $verify_challenge = $this->generateCodeChallenge($code_verifier);
+    if ($verify_challenge !== $code_challenge) {
+      watchdog('openid_connect', 'PKCE challenge verification failed! Generated: %gen, Verified: %verify', 
+        array(
+          '%gen' => $code_challenge,
+          '%verify' => $verify_challenge
+        ), WATCHDOG_ERROR);
+    }
     
     // Save destination URL if it exists
     openid_connect_save_destination();
@@ -382,47 +395,36 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
       return FALSE;
     }
     
-    // Build request parameters
+    // Build request parameters - without client credentials since they go in header
     $request_params = array(
       'grant_type' => 'authorization_code',
       'code' => $authorization_code,
       'redirect_uri' => $absolute_redirect_uri,
-      'client_id' => $client_id,
-      'client_secret' => $client_secret,
-      'code_verifier' => isset($_SESSION['openid_connect_code_verifier']) ? $_SESSION['openid_connect_code_verifier'] : '',
     );
 
-    // Add debug logging for session state
-    watchdog('openid_connect', 'Session state before token request - code_verifier exists: %exists, length: %length', array(
-      '%exists' => isset($_SESSION['openid_connect_code_verifier']) ? 'yes' : 'no',
-      '%length' => isset($_SESSION['openid_connect_code_verifier']) ? strlen($_SESSION['openid_connect_code_verifier']) : 0
-    ), WATCHDOG_DEBUG);
+    // Create Basic Auth header from client credentials
+    $auth_header = 'Basic ' . base64_encode($client_id . ':' . $client_secret);
 
-    watchdog('openid_connect', 'Token request parameters prepared: endpoint=%endpoint, redirect=%redirect, client_id=%client_id, has_verifier=%has_verifier', 
-      array(
-        '%endpoint' => $endpoints['token'],
-        '%redirect' => $absolute_redirect_uri,
-        '%client_id' => $client_id,
-        '%has_verifier' => isset($_SESSION['openid_connect_code_verifier']) ? 'yes' : 'no'
-      ), WATCHDOG_DEBUG);
-
-    // Prepare HTTP request
+    // Prepare HTTP request with proper headers including Basic Auth
     $request_options = array(
       'headers' => array(
         'Content-Type' => 'application/x-www-form-urlencoded',
+        'Accept' => 'application/json',
+        'Authorization' => $auth_header
       ),
       'method' => 'POST',
-      'data' => http_build_query($request_params, '', '&'),
+      'data' => http_build_query($request_params, '', '&', PHP_QUERY_RFC3986),
       'timeout' => 30,
     );
 
+    // Log the exact request being sent (excluding sensitive auth header)
+    watchdog('openid_connect', 'Token request details - URL: %url, Data: %data', 
+      array(
+        '%url' => $endpoints['token'],
+        '%data' => $request_options['data']
+      ), WATCHDOG_DEBUG);
+
     try {
-      watchdog('openid_connect', 'Sending token request to: %endpoint with params: %params', 
-        array(
-          '%endpoint' => $endpoints['token'],
-          '%params' => print_r($request_params, TRUE)
-        ), WATCHDOG_DEBUG);
-      
       $response = backdrop_http_request($endpoints['token'], $request_options);
       
       watchdog('openid_connect', 'Token response received. Code: %code, Error: %error, Data: %data', 
