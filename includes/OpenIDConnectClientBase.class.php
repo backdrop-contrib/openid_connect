@@ -277,7 +277,7 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
     
     watchdog('openid_connect', 'Generated state token: %state', array('%state' => $state), WATCHDOG_DEBUG);
     
-    // Generate PKCE code verifier and challenge
+    // Generate and store PKCE parameters
     $code_verifier = $this->generateCodeVerifier();
     $code_challenge = $this->generateCodeChallenge($code_verifier);
     $_SESSION['openid_connect_code_verifier'] = $code_verifier;
@@ -293,7 +293,7 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
       'response_type' => 'code',
       'client_id' => trim($this->getSetting('client_id')),
       'redirect_uri' => $absolute_redirect_uri,
-      'scope' => $scope,
+      'scope' => str_replace(' ', '%20', $scope),
       'state' => $state,
       'code_challenge' => $code_challenge,
       'code_challenge_method' => 'S256',
@@ -306,7 +306,7 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
       'response_type=' . $query_params['response_type'] . '&' .
       'client_id=' . $query_params['client_id'] . '&' .
       'redirect_uri=' . urlencode($query_params['redirect_uri']) . '&' .
-      'scope=' . urlencode($query_params['scope']) . '&' .
+      'scope=' . str_replace(' ', '%20', $scope) . '&' .
       'state=' . $query_params['state'] . '&' .
       'code_challenge=' . $query_params['code_challenge'] . '&' .
       'code_challenge_method=' . $query_params['code_challenge_method'];
@@ -389,13 +389,21 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
       'redirect_uri' => $absolute_redirect_uri,
       'client_id' => $client_id,
       'client_secret' => $client_secret,
+      'code_verifier' => isset($_SESSION['openid_connect_code_verifier']) ? $_SESSION['openid_connect_code_verifier'] : '',
     );
 
-    watchdog('openid_connect', 'Token request parameters prepared: endpoint=%endpoint, redirect=%redirect, client_id=%client_id', 
+    // Add debug logging for session state
+    watchdog('openid_connect', 'Session state before token request - code_verifier exists: %exists, length: %length', array(
+      '%exists' => isset($_SESSION['openid_connect_code_verifier']) ? 'yes' : 'no',
+      '%length' => isset($_SESSION['openid_connect_code_verifier']) ? strlen($_SESSION['openid_connect_code_verifier']) : 0
+    ), WATCHDOG_DEBUG);
+
+    watchdog('openid_connect', 'Token request parameters prepared: endpoint=%endpoint, redirect=%redirect, client_id=%client_id, has_verifier=%has_verifier', 
       array(
         '%endpoint' => $endpoints['token'],
         '%redirect' => $absolute_redirect_uri,
-        '%client_id' => $client_id
+        '%client_id' => $client_id,
+        '%has_verifier' => isset($_SESSION['openid_connect_code_verifier']) ? 'yes' : 'no'
       ), WATCHDOG_DEBUG);
 
     // Prepare HTTP request
