@@ -25,95 +25,121 @@
  */
 function openid_connect_redirect_page($client_name) {
   // Start session if not already started
-  if (session_status() === PHP_SESSION_NONE) {
-    session_start();
+  if (!backdrop_session_started()) {
+    backdrop_session_start();
+    watchdog('openid_connect', 'Started new session in redirect page', array(), WATCHDOG_DEBUG);
   }
-  
-  // Enhanced debugging - Log all request details
-  watchdog('openid_connect', 'Starting redirect page callback for client: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
-  watchdog('openid_connect', 'REQUEST details: %request', array('%request' => print_r($_REQUEST, TRUE)), WATCHDOG_DEBUG);
-  watchdog('openid_connect', 'SESSION details: %session', array('%session' => print_r($_SESSION, TRUE)), WATCHDOG_DEBUG);
-  
-  // Get OAuth parameters from the request
-  $state = isset($_GET['state']) ? $_GET['state'] : '';
-  $code = isset($_GET['code']) ? $_GET['code'] : '';
-  
-  watchdog('openid_connect', 'OAuth parameters - State: %state, Code: %code', array('%state' => $state, '%code' => $code), WATCHDOG_DEBUG);
 
-  // Validate state
-  if (!openid_connect_confirm_state_token($state)) {
-    watchdog('openid_connect', 'State token validation failed', array(), WATCHDOG_ERROR);
-    backdrop_set_message(t('Invalid state parameter. Please try again.'), 'error');
-    backdrop_goto('user');
-    return FALSE;
-  }
-  watchdog('openid_connect', 'State token validated successfully', array(), WATCHDOG_DEBUG);
-  
-  // Get stored session parameters
-  $parameters = array(
-    'destination' => 'user',
-    'op' => 'login',
-    'connect_uid' => NULL,
-  );
-  foreach ($parameters as $key => $default) {
-    if (isset($_SESSION['openid_connect_' . $key])) {
-      $parameters[$key] = $_SESSION['openid_connect_' . $key];
-      unset($_SESSION['openid_connect_' . $key]);
-    }
-  }
-  watchdog('openid_connect', 'Session parameters: %params', array('%params' => print_r($parameters, TRUE)), WATCHDOG_DEBUG);
+  watchdog('openid_connect', 'Redirect page called. Session status: %status, Session ID: %sid', 
+    array(
+      '%status' => session_status(),
+      '%sid' => session_id()
+    ), WATCHDOG_DEBUG);
 
-  // Handle destination
-  $destination = $parameters['destination'];
-  if (is_array($destination)) {
-    $path = $destination[0];
-    $options = $destination[1];
+  if (!isset($_GET['error']) && !isset($_GET['code'])) {
+    watchdog('openid_connect', 'Missing code or error parameters', array(), WATCHDOG_ERROR);
+    backdrop_set_message(t('Authentication failed. Please try logging in again.'), 'error');
+    backdrop_goto('user/login', array('query' => array()));
+    return;
   }
-  else {
-    $path = $destination;
-    $options = array();
-  }
-  watchdog('openid_connect', 'Destination path: %path, options: %options', array('%path' => $path, '%options' => print_r($options, TRUE)), WATCHDOG_DEBUG);
 
-  // Get client
+  if (isset($_GET['error'])) {
+    watchdog('openid_connect', 'Authentication error: @error', array('@error' => $_GET['error']), WATCHDOG_ERROR);
+    backdrop_set_message(t('Login failed: @error. Please try again.', array('@error' => $_GET['error'])), 'error');
+    backdrop_goto('user/login', array('query' => array()));
+    return;
+  }
+
   $client = openid_connect_get_client($client_name);
   if (!$client) {
-    watchdog('openid_connect', 'Invalid OpenID Connect client: %client', array('%client' => $client_name), WATCHDOG_ERROR);
-    backdrop_set_message(t('Invalid OpenID Connect client.'), 'error');
-    backdrop_goto($path, $options);
+    watchdog('openid_connect', 'Invalid client: @client', array('@client' => $client_name), WATCHDOG_ERROR);
+    backdrop_set_message(t('Authentication service is not properly configured. Please contact the site administrator.'), 'error');
+    backdrop_goto('user/login', array('query' => array()));
+    return;
   }
-  watchdog('openid_connect', 'Client loaded successfully: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
 
-  // Exchange code for tokens
-  watchdog('openid_connect', 'Starting token exchange for client: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
-  $tokens = $client->retrieveTokens($code);
-  if (!$tokens) {
-    watchdog('openid_connect', 'Failed to retrieve tokens for client: %client', array('%client' => $client_name), WATCHDOG_ERROR);
-    backdrop_set_message(t('Could not retrieve tokens.'), 'error');
-    backdrop_goto($path, $options);
+  // Verify the state parameter
+  if (!isset($_GET['state'])) {
+    watchdog('openid_connect', 'Missing state parameter', array(), WATCHDOG_ERROR);
+    backdrop_set_message(t('Your login session has expired. Please try logging in again.'), 'error');
+    backdrop_goto('user/login', array('query' => array()));
+    return;
   }
-  watchdog('openid_connect', 'Retrieved tokens successfully for client: %client. Tokens: %tokens', 
-    array('%client' => $client_name, '%tokens' => print_r($tokens, TRUE)), WATCHDOG_DEBUG);
 
-  // Complete authorization
+  if (!isset($_SESSION['openid_connect_state'])) {
+    watchdog('openid_connect', 'No state token in session. Session ID: %sid', 
+      array('%sid' => session_id()), WATCHDOG_ERROR);
+    backdrop_set_message(t('Your login session has expired. Please try logging in again.'), 'error');
+    backdrop_goto('user/login', array('query' => array()));
+    return;
+  }
+
+  watchdog('openid_connect', 'State verification - Received: %received, Session state: %session_state', 
+    array(
+      '%received' => $_GET['state'],
+      '%session_state' => $_SESSION['openid_connect_state']
+    ), WATCHDOG_DEBUG);
+
+  if ($_GET['state'] !== $_SESSION['openid_connect_state']) {
+    watchdog('openid_connect', 'State token mismatch. Expected: %expected, Received: %received',
+      array(
+        '%expected' => $_SESSION['openid_connect_state'],
+        '%received' => $_GET['state']
+      ), WATCHDOG_ERROR);
+    backdrop_set_message(t('Your login session has expired or is invalid. Please try logging in again.'), 'error');
+    backdrop_goto('user/login', array('query' => array()));
+    return;
+  }
+
+  // Clear the state token after successful validation
+  $state = $_SESSION['openid_connect_state'];
+  unset($_SESSION['openid_connect_state']);
+  unset($_SESSION['openid_connect_state_time']);
+
+  // Use destination from session if available, default to 'user' if not set
+  $destination = isset($_SESSION['openid_connect_destination']) ? $_SESSION['openid_connect_destination'] : array('path' => 'user', 'query' => array());
+  unset($_SESSION['openid_connect_destination']);
+
+  if (!$client->retrieveTokens($_GET['code'])) {
+    watchdog('openid_connect', 'Failed to retrieve tokens', array(), WATCHDOG_ERROR);
+    backdrop_set_message(t('Failed to complete authentication. Please try logging in again.'), 'error');
+    backdrop_goto('user/login', array('query' => array()));
+    return;
+  }
+
+  // Complete the authorization
+  $tokens = $client->getTokens();
   try {
-    watchdog('openid_connect', 'Starting authorization completion for client: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
     $success = openid_connect_complete_authorization($client, $tokens, $destination);
-    if ($success) {
-      watchdog('openid_connect', 'Authorization completed successfully for client: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
-      backdrop_set_message(t('You have been successfully logged in.'));
-    }
-    else {
-      watchdog('openid_connect', 'Authorization failed for client: %client', array('%client' => $client_name), WATCHDOG_ERROR);
-      backdrop_set_message(t('Login failed.'), 'error');
-    }
   }
   catch (Exception $e) {
-    watchdog('openid_connect', 'Exception during authorization: @message', array('@message' => $e->getMessage()), WATCHDOG_ERROR);
-    backdrop_set_message(t('An error occurred during login.'), 'error');
+    watchdog_exception('openid_connect', $e);
+    backdrop_set_message(t('An error occurred during authentication. Please try logging in again.'), 'error');
+    backdrop_goto('user/login', array('query' => array()));
+    return;
   }
 
-  backdrop_goto($path, $options);
+  if ($success) {
+    // Ensure destination is properly structured
+    if (is_string($destination)) {
+      $path = $destination;
+      $options = array('query' => array());
+    }
+    elseif (is_array($destination) && isset($destination['path'])) {
+      $path = $destination['path'];
+      $options = isset($destination['query']) ? array('query' => $destination['query']) : array('query' => array());
+    }
+    else {
+      $path = 'user';
+      $options = array('query' => array());
+    }
+    backdrop_goto($path, $options);
+    return;
+  }
+
+  backdrop_set_message(t('Authentication failed. Please try logging in again.'), 'error');
+  backdrop_goto('user/login', array('query' => array()));
+  return;
 }
 
 /**

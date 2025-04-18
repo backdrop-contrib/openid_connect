@@ -238,14 +238,22 @@ function openid_connect_block_view($delta = '') {
  *   A state token that later can be validated to prevent request forgery.
  */
 function openid_connect_create_state_token() {
+  // Ensure we have an active session
+  if (!backdrop_session_started()) {
+    backdrop_session_start();
+    watchdog('openid_connect', 'Started new session for state token creation', array(), WATCHDOG_DEBUG);
+  }
+
   $state = backdrop_random_key();
   $_SESSION['openid_connect_state'] = $state;
-  watchdog('openid_connect', 'Created state token: %state. Session ID: %sid, Session data: %session', 
+  $_SESSION['openid_connect_state_time'] = REQUEST_TIME;
+
+  watchdog('openid_connect', 'Created state token: %state, Session ID: %sid', 
     array(
       '%state' => $state,
-      '%sid' => session_id(),
-      '%session' => print_r($_SESSION, TRUE)
+      '%sid' => session_id()
     ), WATCHDOG_DEBUG);
+
   return $state;
 }
 
@@ -260,35 +268,50 @@ function openid_connect_create_state_token() {
  *   in the session.
  */
 function openid_connect_confirm_state_token($state_token) {
-  watchdog('openid_connect', 'Validating state token. Received: %received, Session ID: %sid, Session data: %session', 
+  if (!backdrop_session_started()) {
+    backdrop_session_start();
+    watchdog('openid_connect', 'Started new session for state token validation', array(), WATCHDOG_DEBUG);
+  }
+
+  watchdog('openid_connect', 'Validating state token. Received: %received, Session: %session', 
     array(
       '%received' => $state_token,
-      '%sid' => session_id(),
       '%session' => print_r($_SESSION, TRUE)
     ), WATCHDOG_DEBUG);
-    
-  if (!isset($_SESSION['openid_connect_state'])) {
-    watchdog('openid_connect', 'No state token found in session. Session ID: %sid', 
+
+  if (empty($_SESSION['openid_connect_state'])) {
+    watchdog('openid_connect', 'No state token in session. Session ID: %sid', 
       array('%sid' => session_id()), WATCHDOG_ERROR);
     return FALSE;
   }
+
+  // Validate state token
+  $valid = $state_token === $_SESSION['openid_connect_state'];
   
-  $result = $state_token === $_SESSION['openid_connect_state'];
-  if (!$result) {
+  // Check if state token is not too old (max 30 minutes)
+  if ($valid && !empty($_SESSION['openid_connect_state_time'])) {
+    $valid = ($_SESSION['openid_connect_state_time'] > (REQUEST_TIME - 1800));
+    if (!$valid) {
+      watchdog('openid_connect', 'State token expired. Created: %time', 
+        array('%time' => date('Y-m-d H:i:s', $_SESSION['openid_connect_state_time'])), WATCHDOG_ERROR);
+    }
+  }
+
+  if (!$valid) {
     watchdog('openid_connect', 'State token mismatch. Expected: %expected, Received: %received', 
       array(
         '%expected' => $_SESSION['openid_connect_state'],
         '%received' => $state_token
       ), WATCHDOG_ERROR);
+  } else {
+    watchdog('openid_connect', 'State token validated successfully', array(), WATCHDOG_DEBUG);
   }
-  else {
-    watchdog('openid_connect', 'State token validation successful', array(), WATCHDOG_DEBUG);
-  }
-  
-  // Clear the state token after validation
+
+  // Clear state data after validation
   unset($_SESSION['openid_connect_state']);
-  
-  return $result;
+  unset($_SESSION['openid_connect_state_time']);
+
+  return $valid;
 }
 
 /**
@@ -449,18 +472,20 @@ function openid_connect_login_user($account, $destination) {
 }
 
 /**
- * Save the current path in the session, for redirecting after authorization.
+ * Saves the current path in the session, for redirecting after authorization.
  */
 function openid_connect_save_destination() {
-  watchdog('openid_connect', 'Saving destination in openid_connect_save_destination', array(), WATCHDOG_DEBUG);
-  $destination = backdrop_get_destination();
-  $destination = $destination['destination'] == 'user/login' ? 'user' : $destination['destination'];
-  $parsed = backdrop_parse_url($destination);
-  $_SESSION['openid_connect_destination'] = array(
-    $parsed['path'],
-    array('query' => $parsed['query']),
-  );
-  watchdog('openid_connect', 'Saved destination: %path', array('%path' => $parsed['path']), WATCHDOG_DEBUG);
+  if (!backdrop_session_started()) {
+    backdrop_session_start();
+  }
+
+  $destination = &backdrop_static(__FUNCTION__);
+  if (!isset($destination)) {
+    $destination = backdrop_get_destination();
+  }
+  $_SESSION['openid_connect_destination'] = $destination;
+
+  watchdog('openid_connect', 'Saved destination: %dest', array('%dest' => print_r($destination, TRUE)), WATCHDOG_DEBUG);
 }
 
 /**
