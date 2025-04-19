@@ -944,7 +944,22 @@ function openid_connect_get_connected_accounts($account) {
 function openid_connect_connect_account($account, $client_name, $sub) {
   watchdog('openid_connect', 'Connecting account in openid_connect_connect_account: uid=%uid, client=%client, sub=%sub', 
     array('%uid' => $account->uid, '%client' => $client_name, '%sub' => $sub), WATCHDOG_DEBUG);
-  user_set_authmaps($account, array('authname_openid_connect_' . $client_name => $sub));
+  
+  // First, remove any existing authmap entries for this client
+  db_delete('authmap')
+    ->condition('uid', $account->uid)
+    ->condition('module', 'openid_connect_' . $client_name)
+    ->execute();
+    
+  // Then insert the new authmap entry
+  db_insert('authmap')
+    ->fields(array(
+      'uid' => $account->uid,
+      'module' => 'openid_connect_' . $client_name,
+      'authname' => $sub,
+    ))
+    ->execute();
+    
   watchdog('openid_connect', 'Successfully connected account', array(), WATCHDOG_DEBUG);
 }
 
