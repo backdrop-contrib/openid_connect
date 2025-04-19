@@ -108,7 +108,7 @@ function openid_connect_redirect_page($client_name) {
   }
 
   // Complete the authorization
-  $tokens = $client->getTokens();
+  $tokens = $client->retrieveTokens($_GET['code']);
   try {
     $success = openid_connect_complete_authorization($client, $tokens, $destination);
   }

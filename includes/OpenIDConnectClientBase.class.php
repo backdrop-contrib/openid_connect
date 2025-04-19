@@ -66,6 +66,13 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
   protected $settings;
 
   /**
+   * Tokens retrieved from the provider.
+   *
+   * @var array
+   */
+  protected $tokens;
+
+  /**
    * Constructs a new OpenIDConnectClientBase.
    *
    * @param string $name
@@ -374,9 +381,10 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
     }
 
     // Prepare token request - use exact same redirect URI construction as in authorize()
-    $redirect_uri = OPENID_CONNECT_REDIRECT_PATH_BASE . '/' . $this->name;
+    $redirect_uri = 'openid-connect/' . $this->name;
     $absolute_redirect_uri = url($redirect_uri, array(
       'absolute' => TRUE,
+      'https' => TRUE,
       'language' => LANGUAGE_NONE,
     ));
     
@@ -394,6 +402,9 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
       watchdog('openid_connect', 'Missing client credentials', array(), WATCHDOG_ERROR);
       return FALSE;
     }
+
+    // Add PKCE code verifier if it exists
+    $code_verifier = isset($_SESSION['openid_connect_code_verifier']) ? $_SESSION['openid_connect_code_verifier'] : NULL;
     
     // Build request parameters - without client credentials since they go in header
     $request_params = array(
@@ -402,8 +413,20 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
       'redirect_uri' => $absolute_redirect_uri,
     );
 
+    // Add PKCE code verifier if we have it
+    if ($code_verifier) {
+      $request_params['code_verifier'] = $code_verifier;
+      watchdog('openid_connect', 'Added PKCE code_verifier to token request', array(), WATCHDOG_DEBUG);
+    } else {
+      watchdog('openid_connect', 'No PKCE code_verifier found in session', array(), WATCHDOG_WARNING);
+    }
+
     // Create Basic Auth header from client credentials
     $auth_header = 'Basic ' . base64_encode($client_id . ':' . $client_secret);
+
+    // Log full request parameters for debugging
+    watchdog('openid_connect', 'Token request parameters: <pre>@params</pre>', 
+      array('@params' => print_r($request_params, TRUE)), WATCHDOG_DEBUG);
 
     // Prepare HTTP request with proper headers including Basic Auth
     $request_options = array(
@@ -417,12 +440,11 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
       'timeout' => 30,
     );
 
-    // Log the exact request being sent (excluding sensitive auth header)
-    watchdog('openid_connect', 'Token request details - URL: %url, Data: %data', 
-      array(
-        '%url' => $endpoints['token'],
-        '%data' => $request_options['data']
-      ), WATCHDOG_DEBUG);
+    watchdog('openid_connect', 'Token request URL: %url', array('%url' => $endpoints['token']), WATCHDOG_DEBUG);
+    watchdog('openid_connect', 'Token request headers: <pre>@headers</pre>', 
+      array('@headers' => print_r($request_options['headers'], TRUE)), WATCHDOG_DEBUG);
+    watchdog('openid_connect', 'Token request data (raw): %data', 
+      array('%data' => $request_options['data']), WATCHDOG_DEBUG);
 
     try {
       $response = backdrop_http_request($endpoints['token'], $request_options);
@@ -433,6 +455,11 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
           '%error' => isset($response->error) ? $response->error : 'none',
           '%data' => isset($response->data) ? $response->data : 'none'
         ), WATCHDOG_DEBUG);
+
+      if (isset($response->headers)) {
+        watchdog('openid_connect', 'Token response headers: <pre>@headers</pre>', 
+          array('@headers' => print_r($response->headers, TRUE)), WATCHDOG_DEBUG);
+      }
       
       // Check for network level errors
       if (isset($response->error)) {
@@ -459,11 +486,14 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
         
         watchdog('openid_connect', 'Successfully retrieved tokens for client: %client', array('%client' => $this->name), WATCHDOG_DEBUG);
         
-        return array(
+        // Store tokens in instance
+        $this->tokens = array(
           'id_token' => isset($response_data['id_token']) ? $response_data['id_token'] : NULL,
           'access_token' => $response_data['access_token'],
           'refresh_token' => isset($response_data['refresh_token']) ? $response_data['refresh_token'] : NULL,
         );
+        
+        return $this->tokens;
       }
       else {
         watchdog('openid_connect', 'Token request failed with HTTP %code. Response: %response', 
