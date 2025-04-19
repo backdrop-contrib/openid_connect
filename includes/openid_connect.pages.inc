@@ -100,7 +100,9 @@ function openid_connect_redirect_page($client_name) {
   $destination = isset($_SESSION['openid_connect_destination']) ? $_SESSION['openid_connect_destination'] : array('path' => 'user', 'query' => array());
   unset($_SESSION['openid_connect_destination']);
 
-  if (!$client->retrieveTokens($_GET['code'])) {
+  // Retrieve tokens and store the result
+  $tokens = $client->retrieveTokens($_GET['code']);
+  if (!$tokens) {
     watchdog('openid_connect', 'Failed to retrieve tokens', array(), WATCHDOG_ERROR);
     backdrop_set_message(t('Failed to complete authentication. Please try logging in again.'), 'error');
     backdrop_goto('user/login', array('query' => array()));
@@ -108,7 +110,6 @@ function openid_connect_redirect_page($client_name) {
   }
 
   // Complete the authorization
-  $tokens = $client->retrieveTokens($_GET['code']);
   try {
     $success = openid_connect_complete_authorization($client, $tokens, $destination);
   }
