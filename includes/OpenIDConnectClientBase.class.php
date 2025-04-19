@@ -136,6 +136,12 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
       '#type' => 'textarea',
       '#default_value' => $this->getSetting('client_secret'),
     );
+    $form['use_pkce'] = array(
+      '#title' => t('Use PKCE'),
+      '#type' => 'checkbox',
+      '#default_value' => $this->getSetting('use_pkce', FALSE),
+      '#description' => t('Enable PKCE (Proof Key for Code Exchange) for additional security. Disable if the provider does not support PKCE.'),
+    );
 
     return $form;
   }
@@ -261,7 +267,7 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    * - state (CSRF protection)
    * - PKCE parameters (if enabled)
    */
-  public function authorize($scope = 'openid email') {
+  public function authorize($scope = 'openid email profile') {
     watchdog('openid_connect', 'Starting authorization for client: %client with scope: %scope', 
       array('%client' => $this->name, '%scope' => $scope), WATCHDOG_DEBUG);
     
@@ -284,63 +290,44 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
     
     watchdog('openid_connect', 'Generated state token: %state', array('%state' => $state), WATCHDOG_DEBUG);
     
-    // Generate and store PKCE parameters
-    $code_verifier = $this->generateCodeVerifier();
-    $code_challenge = $this->generateCodeChallenge($code_verifier);
-    $_SESSION['openid_connect_code_verifier'] = $code_verifier;
-    
-    watchdog('openid_connect', 'Generated PKCE parameters - Verifier: %verifier, Challenge: %challenge', 
-      array(
-        '%verifier' => $code_verifier,
-        '%challenge' => $code_challenge
-      ), WATCHDOG_DEBUG);
-
-    // Verify the challenge matches the verifier
-    $verify_challenge = $this->generateCodeChallenge($code_verifier);
-    if ($verify_challenge !== $code_challenge) {
-      watchdog('openid_connect', 'PKCE challenge verification failed! Generated: %gen, Verified: %verify', 
-        array(
-          '%gen' => $code_challenge,
-          '%verify' => $verify_challenge
-        ), WATCHDOG_ERROR);
-    }
-    
-    // Save destination URL if it exists
-    openid_connect_save_destination();
-    
-    // Build authorization URL
+    // Build authorization URL parameters
     $query_params = array(
       'response_type' => 'code',
-      'client_id' => trim($this->getSetting('client_id')),
+      'client_id' => $this->getSetting('client_id'),
       'redirect_uri' => $absolute_redirect_uri,
-      'scope' => str_replace(' ', '%20', $scope),
+      'scope' => $scope,
       'state' => $state,
-      'code_challenge' => $code_challenge,
-      'code_challenge_method' => 'S256',
     );
+
+    // Only add PKCE parameters if enabled
+    if ($this->getSetting('use_pkce', FALSE)) {
+      $code_verifier = $this->generateCodeVerifier();
+      $code_challenge = $this->generateCodeChallenge($code_verifier);
+      $_SESSION['openid_connect_code_verifier'] = $code_verifier;
+      
+      $query_params['code_challenge'] = $code_challenge;
+      $query_params['code_challenge_method'] = 'S256';
+      
+      watchdog('openid_connect', 'Added PKCE parameters to authorization request', array(), WATCHDOG_DEBUG);
+    }
     
-    watchdog('openid_connect', 'Authorization parameters: %params', array('%params' => print_r($query_params, TRUE)), WATCHDOG_DEBUG);
-    
-    // Use the configured authorization endpoint
+    // Build the authorization URL with proper encoding
     $authorization_url = $endpoints['authorization'] . '?' . 
       'response_type=' . $query_params['response_type'] . '&' .
       'client_id=' . $query_params['client_id'] . '&' .
-      'redirect_uri=' . urlencode($query_params['redirect_uri']) . '&' .
-      'scope=' . str_replace(' ', '%20', $scope) . '&' .
-      'state=' . $query_params['state'] . '&' .
-      'code_challenge=' . $query_params['code_challenge'] . '&' .
-      'code_challenge_method=' . $query_params['code_challenge_method'];
+      'redirect_uri=' . str_replace('%2F', '/', urlencode($query_params['redirect_uri'])) . '&' .
+      'scope=' . $query_params['scope'] . '&' .
+      'state=' . $query_params['state'];
 
-    watchdog('openid_connect', 'Final authorization URL: %url', array('%url' => $authorization_url), WATCHDOG_DEBUG);
-
-    // Clear $_GET['destination'] because we need to override it
-    unset($_GET['destination']);
+    // Add PKCE parameters to URL if enabled
+    if ($this->getSetting('use_pkce', FALSE)) {
+      $authorization_url .= '&code_challenge=' . $query_params['code_challenge'] . 
+                          '&code_challenge_method=' . $query_params['code_challenge_method'];
+    }
     
-    watchdog('openid_connect', 'Redirecting to authorization URL', array(), WATCHDOG_DEBUG);
+    watchdog('openid_connect', 'Redirecting to authorization URL: %url', array('%url' => $authorization_url), WATCHDOG_DEBUG);
     
-    // Use direct header redirect instead of backdrop_goto
-    header('Location: ' . $authorization_url);
-    exit;
+    backdrop_goto($authorization_url);
   }
 
   /**

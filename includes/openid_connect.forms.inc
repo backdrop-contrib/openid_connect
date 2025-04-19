@@ -74,33 +74,46 @@ function openid_connect_connect_form($form, &$form_state, $account) {
       '#type' => 'fieldset',
       '#title' => t('Provider: @title', array('@title' => $client['title'])),
     );
-    $fieldset = $form[$client['name']];
+    
     $connected = isset($connected_accounts[$client['name']]);
-    $fieldset['status'] = array(
+    
+    // Add status section
+    $form[$client['name']]['status'] = array(
       '#type' => 'item',
       '#title' => t('Status'),
-      '#markup' => t('Not connected'),
     );
+    
     if ($connected) {
       watchdog('openid_connect', 'Account already connected to client: %client', array('%client' => $client['name']), WATCHDOG_DEBUG);
-      $fieldset['status']['#markup'] = t('Connected as %sub', array(
-        '%sub' => $connected_accounts[$client['name']],
-      ));
-      $fieldset['openid_connect_client_' . $client['name'] . '_disconnect'] = array(
+      
+      // Add status message
+      $form[$client['name']]['status']['#markup'] = '<div class="connected-status">' . 
+        t('Connected as %sub', array('%sub' => $connected_accounts[$client['name']])) . 
+        '</div>';
+      
+      // Add disconnect button
+      $form[$client['name']]['actions']['disconnect'] = array(
         '#type' => 'submit',
         '#value' => t('Disconnect from @client_title', array('@client_title' => $client['title'])),
         '#name' => 'disconnect__' . $client['name'],
+        '#attributes' => array('class' => array('button-disconnect')),
       );
     }
     else {
       watchdog('openid_connect', 'Account not connected to client: %client', array('%client' => $client['name']), WATCHDOG_DEBUG);
-      $fieldset['status']['#markup'] = t('Not connected');
-      $fieldset['openid_connect_client_' . $client['name'] . '_connect'] = array(
-        '#type' => 'submit',
-        '#value' => t('Connect with @client_title', array('@client_title' => $client['title'])),
-        '#name' => 'connect__' . $client['name'],
-        '#access' => $GLOBALS['user']->uid == $account->uid,
-      );
+      
+      // Add status message
+      $form[$client['name']]['status']['#markup'] = '<div class="not-connected-status">' . t('Not connected') . '</div>';
+      
+      // Add connect button if user has access
+      if ($GLOBALS['user']->uid == $account->uid) {
+        $form[$client['name']]['actions']['connect'] = array(
+          '#type' => 'submit',
+          '#value' => t('Connect with @client_title', array('@client_title' => $client['title'])),
+          '#name' => 'connect__' . $client['name'],
+          '#attributes' => array('class' => array('button-connect')),
+        );
+      }
     }
   }
 
