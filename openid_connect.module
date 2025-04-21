@@ -503,17 +503,23 @@ function openid_connect_save_destination() {
  */
 function openid_connect_create_user($sub, $userinfo, $client_name) {
   watchdog('openid_connect', 'Creating new user in openid_connect_create_user for sub: %sub', array('%sub' => $sub), WATCHDOG_DEBUG);
-  $edit = array(
+  
+  // Create a new user entity with initial properties
+  $account = entity_create('user', array(
+    'is_new' => TRUE,
+    'status' => 1,
     'name' => openid_connect_generate_username($sub, $userinfo, $client_name),
     'pass' => user_password(),
     'mail' => $userinfo['email'],
     'init' => $userinfo['email'],
-    'status' => 1,
     'openid_connect_client' => $client_name,
     'openid_connect_sub' => $sub,
-  );
-  watchdog('openid_connect', 'User creation data: %data', array('%data' => print_r($edit, TRUE)), WATCHDOG_DEBUG);
-  $account = user_save(NULL, $edit);
+  ));
+  
+  watchdog('openid_connect', 'User entity created: %data', array('%data' => print_r($account, TRUE)), WATCHDOG_DEBUG);
+  
+  // Save the user entity
+  $account = user_save($account);
   watchdog('openid_connect', 'Created user with uid: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
   
   // Connect the user to the OpenID Connect provider
