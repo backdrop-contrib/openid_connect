@@ -520,6 +520,11 @@ function openid_connect_create_user($sub, $userinfo, $client_name) {
   
   // Save the user entity
   $account = user_save($account);
+  if (!$account) {
+    watchdog('openid_connect', 'Failed to create user', array(), WATCHDOG_ERROR);
+    return FALSE;
+  }
+  
   watchdog('openid_connect', 'Created user with uid: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
   
   // Connect the user to the OpenID Connect provider
@@ -628,16 +633,16 @@ function openid_connect_username_alter($name, $account) {
  * Implements hook_user_insert().
  */
 function openid_connect_user_insert($edit, $account = NULL, $category = NULL) {
-  if (isset($edit['openid_connect_client'])) {
+  if (isset($account->openid_connect_client)) {
     watchdog('openid_connect', 'Connecting user %uid to OpenID Connect client %client with sub %sub', 
       array(
         '%uid' => $account->uid,
-        '%client' => $edit['openid_connect_client'],
-        '%sub' => $edit['openid_connect_sub']
+        '%client' => $account->openid_connect_client,
+        '%sub' => $account->openid_connect_sub
       ), 
       WATCHDOG_DEBUG
     );
-    openid_connect_connect_account($account, $edit['openid_connect_client'], $edit['openid_connect_sub']);
+    openid_connect_connect_account($account, $account->openid_connect_client, $account->openid_connect_sub);
   }
 }
 

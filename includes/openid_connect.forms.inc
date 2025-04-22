@@ -13,9 +13,15 @@ function openid_connect_login_form($form, &$form_state) {
   form_load_include($form_state, 'inc', 'openid_connect', 'includes/openid_connect.forms');
 
   foreach (openid_connect_get_plugins(TRUE) as $client) {
+    $client_instance = openid_connect_get_client($client['name']);
+    $button_text = $client_instance->getSetting('login_button_text');
+    if (empty($button_text)) {
+      $button_text = t('Log in with @client_title', array('@client_title' => $client['title']));
+    }
+    
     $form['openid_connect_client_' . $client['name'] . '_login'] = array(
       '#type' => 'submit',
-      '#value' => t('Log in with @client_title', array('@client_title' => $client['title'])),
+      '#value' => $button_text,
       '#name' => $client['name'],
     );
     watchdog('openid_connect', 'Added login button for client: %client', array('%client' => $client['name']), WATCHDOG_DEBUG);

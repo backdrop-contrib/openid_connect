@@ -35,6 +35,12 @@ class OpenIDConnectClientGeneric extends OpenIDConnectClientBase {
       '#type' => 'textfield',
       '#default_value' => $this->getSetting('userinfo_endpoint', $default_site . '/UserInfo'),
     );
+    $form['login_button_text'] = array(
+      '#title' => t('Login button text'),
+      '#type' => 'textfield',
+      '#default_value' => $this->getSetting('login_button_text', t('Log in with Generic')),
+      '#description' => t('Customize the text displayed on the login button.'),
+    );
 
     return $form;
   }
