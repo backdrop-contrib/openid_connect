@@ -483,9 +483,46 @@ function openid_connect_save_destination() {
   if (!isset($destination)) {
     $destination = backdrop_get_destination();
   }
+  
+  // Log the raw destination value
+  watchdog('openid_connect', 'Raw destination value: @dest', 
+    array('@dest' => print_r($destination, TRUE)), WATCHDOG_DEBUG);
+    
+  // Restructure the destination array if needed
+  if (isset($destination['destination'])) {
+    $path = $destination['destination'];
+    // If destination itself is a query string, parse it
+    if (strpos($path, '?') !== FALSE) {
+      $parts = backdrop_parse_url($path);
+      $path = $parts['path'];
+      $query = isset($parts['query']) ? backdrop_get_query_array($parts['query']) : array();
+    } else {
+      $query = array();
+    }
+    $destination = array(
+      'path' => $path,
+      'query' => $query,
+    );
+    watchdog('openid_connect', 'Restructured destination: @dest', 
+      array('@dest' => print_r($destination, TRUE)), WATCHDOG_DEBUG);
+  }
+  
+  // Log the current path and query
+  watchdog('openid_connect', 'Current path: %path, Query: %query', 
+    array(
+      '%path' => current_path(),
+      '%query' => print_r($_GET, TRUE)
+    ), WATCHDOG_DEBUG);
+  
+  // Log the session state
+  watchdog('openid_connect', 'Session state before saving destination: @session', 
+    array('@session' => print_r($_SESSION, TRUE)), WATCHDOG_DEBUG);
+  
   $_SESSION['openid_connect_destination'] = $destination;
-
-  watchdog('openid_connect', 'Saved destination: %dest', array('%dest' => print_r($destination, TRUE)), WATCHDOG_DEBUG);
+  
+  // Log the saved destination
+  watchdog('openid_connect', 'Saved destination in session: @dest', 
+    array('@dest' => print_r($_SESSION['openid_connect_destination'], TRUE)), WATCHDOG_DEBUG);
 }
 
 /**
@@ -504,35 +541,157 @@ function openid_connect_save_destination() {
 function openid_connect_create_user($sub, $userinfo, $client_name) {
   watchdog('openid_connect', 'Creating new user in openid_connect_create_user for sub: %sub', array('%sub' => $sub), WATCHDOG_DEBUG);
   
-  // Create a new user entity with initial properties
-  $account = entity_create('user', array(
-    'is_new' => TRUE,
-    'status' => 1,
-    'name' => openid_connect_generate_username($sub, $userinfo, $client_name),
-    'pass' => user_password(),
-    'mail' => $userinfo['email'],
-    'init' => $userinfo['email'],
-    'openid_connect_client' => $client_name,
-    'openid_connect_sub' => $sub,
-  ));
-  
-  watchdog('openid_connect', 'User entity created: %data', array('%data' => print_r($account, TRUE)), WATCHDOG_DEBUG);
-  
-  // Save the user entity
-  $account = user_save($account);
-  if (!$account) {
-    watchdog('openid_connect', 'Failed to create user', array(), WATCHDOG_ERROR);
+  // Validate required information
+  if (empty($userinfo['email'])) {
+    watchdog('openid_connect', 'Cannot create user - missing email', array(), WATCHDOG_ERROR);
     return FALSE;
   }
-  
-  watchdog('openid_connect', 'Created user with uid: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
-  
-  // Connect the user to the OpenID Connect provider
-  openid_connect_connect_account($account, $client_name, $sub);
-  watchdog('openid_connect', 'Connected user %uid to OpenID Connect provider %client', 
-    array('%uid' => $account->uid, '%client' => $client_name), WATCHDOG_DEBUG);
+
+  try {
+    // Generate username if needed
+    $username = openid_connect_generate_username($sub, $userinfo, $client_name);
+    watchdog('openid_connect', 'Generated username: %username', array('%username' => $username), WATCHDOG_DEBUG);
     
-  return $account;
+    // Create base user fields array with minimal required fields
+    $fields = array(
+      'name' => $username,
+      'pass' => user_password(),
+      'mail' => $userinfo['email'],
+      'init' => $userinfo['email'],
+      'status' => 1,
+      'timezone' => config_get('system.date', 'default_timezone'),
+      'roles' => array(BACKDROP_AUTHENTICATED_ROLE => BACKDROP_AUTHENTICATED_ROLE),
+      'created' => REQUEST_TIME,
+      'access' => REQUEST_TIME,
+    );
+
+    // Get field mappings from configuration
+    $config = config('openid_connect.settings');
+    $properties = _openid_connect_user_properties();
+    $properties_skip = _openid_connect_user_properties_to_skip();
+    
+    // Get all field instances for user entity
+    $instances = field_info_instances('user', 'user');
+    
+    // Map claims to fields based on configuration
+    foreach ($instances as $field_name => $instance) {
+      if (isset($properties_skip[$field_name])) {
+        continue;
+      }
+      
+      $claim = $config->get('openid_connect_userinfo_mapping_property_' . $field_name);
+      if ($claim && isset($userinfo[$claim])) {
+        $fields[$field_name][LANGUAGE_NONE][0]['value'] = $userinfo[$claim];
+        watchdog('openid_connect', 'Mapped claim %claim to field %field with value: %value', 
+          array(
+            '%claim' => $claim,
+            '%field' => $field_name,
+            '%value' => $userinfo[$claim]
+          ), WATCHDOG_DEBUG);
+      }
+    }
+
+    // Add OpenID Connect specific data
+    if (!isset($fields['data'])) {
+      $fields['data'] = array();
+    }
+    $fields['data']['openid_connect_client'] = $client_name;
+    $fields['data']['openid_connect_sub'] = $sub;
+    
+    // Create a new user object
+    $account = new User();
+    $account->is_new = TRUE;
+    
+    // Set all the base fields
+    foreach ($fields as $key => $value) {
+      $account->{$key} = $value;
+    }
+    
+     // Log the account object for debugging
+      watchdog('openid_connect', 'Account object before user_save(): @account', 
+        array('@account' => print_r($account, TRUE)), WATCHDOG_DEBUG);
+
+
+    // Add uid to fields array
+    $fields['uid'] = $account->uid;
+    
+    watchdog('openid_connect', 'Attempting to create user with fields - please check for uid: @data', 
+      array('@data' => print_r($fields, TRUE)), WATCHDOG_DEBUG);
+    
+    try {
+      // First validate that we have all required fields
+      if (empty($account->name) || empty($account->mail)) {
+        watchdog('openid_connect', 'Missing required fields - name: %name, mail: %mail', 
+          array('%name' => $account->name, '%mail' => $account->mail), WATCHDOG_ERROR);
+        return FALSE;
+      }
+
+      // Check if username already exists
+      $existing = db_select('users', 'u')
+        ->fields('u', array('uid', 'name'))
+        ->condition('name', $account->name)
+        ->execute()
+        ->fetchObject();
+      
+      if ($existing) {
+        watchdog('openid_connect', 'Username already exists: %name (uid: %uid)', 
+          array('%name' => $existing->name, '%uid' => $existing->uid), WATCHDOG_ERROR);
+        return FALSE;
+      }
+
+      // Try to save the user
+      $saved_account = user_save($account);
+      
+      if (!$saved_account) {
+        watchdog('openid_connect', 'user_save() returned NULL', array(), WATCHDOG_ERROR);
+        return FALSE;
+      }
+      
+      if (!isset($saved_account->uid)) {
+        watchdog('openid_connect', 'user_save() returned account without uid. Account: @account', 
+          array('@account' => print_r($saved_account, TRUE)), WATCHDOG_ERROR);
+        return FALSE;
+      }
+
+      // Log the account object for debugging
+      watchdog('openid_connect', 'Account object after user_save() - original $account: @account', 
+        array('@account' => print_r($account, TRUE)), WATCHDOG_DEBUG);
+
+      // Update the uid in the fields array with the actual uid from the saved account
+      $fields['uid'] = $saved_account->uid;
+      
+      // Log the fields array with the actual uid
+      watchdog('openid_connect', 'User created with fields: @data', 
+        array('@data' => print_r($fields, TRUE)), WATCHDOG_DEBUG);
+
+      // Reload the account to ensure we have all properties
+      $saved_account = user_load($saved_account->uid);
+      if (!$saved_account) {
+        watchdog('openid_connect', 'Failed to load newly created user', array(), WATCHDOG_ERROR);
+        return FALSE;
+      }
+
+      watchdog('openid_connect', 'Successfully created user account with uid: %uid', 
+        array('%uid' => $saved_account->uid), WATCHDOG_DEBUG);
+        
+      return $saved_account;
+    }
+    catch (PDOException $e) {
+      watchdog('openid_connect', 'Database error in user_save(): @error', 
+        array('@error' => $e->getMessage()), WATCHDOG_ERROR);
+      return FALSE;
+    }
+    catch (Exception $e) {
+      watchdog('openid_connect', 'Error in user_save(): @error', 
+        array('@error' => $e->getMessage()), WATCHDOG_ERROR);
+      return FALSE;
+    }
+  }
+  catch (Exception $e) {
+    watchdog('openid_connect', 'Error creating user account: @message', 
+      array('@message' => $e->getMessage()), WATCHDOG_ERROR);
+    return FALSE;
+  }
 }
 
 /**
@@ -731,6 +890,7 @@ function openid_connect_user_load_by_sub($sub, $client_name) {
     $account = user_load($result['uid']);
     if (is_object($account)) {
       watchdog('openid_connect', 'Found user with uid: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
+      watchdog('openid_connect', 'Account details after loading by sub: @account', array('@account' => print_r($account, TRUE)), WATCHDOG_DEBUG);
       return $account;
     }
   }
@@ -847,12 +1007,45 @@ function openid_connect_get_scopes() {
 }
 
 /**
+ * Returns user properties that can be mapped to claims.
+ */
+function _openid_connect_user_properties() {
+  $properties = array(
+    'name' => array(
+      'title' => t('Username'),
+      'type' => 'string',
+    ),
+    'timezone' => array(
+      'title' => t('Timezone'),
+      'type' => 'string',
+    ),
+    'langcode' => array(
+      'title' => t('Language'),
+      'type' => 'string',
+    ),
+    'preferred_langcode' => array(
+      'title' => t('Preferred language'),
+      'type' => 'string',
+    ),
+    'field_first_name' => array(
+      'title' => t('First Name'),
+      'type' => 'string',
+    ),
+    'field_last_name' => array(
+      'title' => t('Last Name'),
+      'type' => 'string',
+    ),
+  );
+  
+  backdrop_alter('openid_connect_user_properties', $properties);
+  return $properties;
+}
+
+/**
  * Returns user properties that can be skipped when mapping user profile info.
  */
 function _openid_connect_user_properties_to_skip() {
   $properties_to_skip = array(
-    'name',
-    'mail',
     'uid',
     'url',
     'edit_url',
@@ -953,25 +1146,67 @@ function openid_connect_get_connected_accounts($account) {
  *   The 'sub' property identifying the external account.
  */
 function openid_connect_connect_account($account, $client_name, $sub) {
-  watchdog('openid_connect', 'Connecting account in openid_connect_connect_account: uid=%uid, client=%client, sub=%sub', 
-    array('%uid' => $account->uid, '%client' => $client_name, '%sub' => $sub), WATCHDOG_DEBUG);
+  $timestamp = microtime(TRUE);
+  watchdog('openid_connect', '[%time] Starting account connection process', 
+    array('%time' => $timestamp), WATCHDOG_DEBUG);
+  watchdog('openid_connect', '[%time] Connection details - uid: %uid, client: %client, sub: %sub', 
+    array(
+      '%time' => $timestamp,
+      '%uid' => $account->uid,
+      '%client' => $client_name,
+      '%sub' => $sub
+    ), WATCHDOG_DEBUG);
   
   // First, remove any existing authmap entries for this client
-  db_delete('authmap')
+  $timestamp = microtime(TRUE);
+  watchdog('openid_connect', '[%time] Removing existing authmap entries', array('%time' => $timestamp), WATCHDOG_DEBUG);
+  $delete_result = db_delete('authmap')
     ->condition('uid', $account->uid)
     ->condition('module', 'openid_connect_' . $client_name)
     ->execute();
+  watchdog('openid_connect', '[%time] Delete operation result: %result', 
+    array('%time' => $timestamp, '%result' => $delete_result), WATCHDOG_DEBUG);
     
   // Then insert the new authmap entry
-  db_insert('authmap')
-    ->fields(array(
-      'uid' => $account->uid,
-      'module' => 'openid_connect_' . $client_name,
-      'authname' => $sub,
-    ))
-    ->execute();
+  $timestamp = microtime(TRUE);
+  watchdog('openid_connect', '[%time] Attempting to insert new authmap entry', array('%time' => $timestamp), WATCHDOG_DEBUG);
+  try {
+    $insert_result = db_insert('authmap')
+      ->fields(array(
+        'uid' => $account->uid,
+        'module' => 'openid_connect_' . $client_name,
+        'authname' => $sub,
+      ))
+      ->execute();
+    watchdog('openid_connect', '[%time] Insert operation result: %result', 
+      array('%time' => $timestamp, '%result' => $insert_result), WATCHDOG_DEBUG);
     
-  watchdog('openid_connect', 'Successfully connected account', array(), WATCHDOG_DEBUG);
+    // Verify the connection was successful
+    $timestamp = microtime(TRUE);
+    watchdog('openid_connect', '[%time] Verifying connection in database', array('%time' => $timestamp), WATCHDOG_DEBUG);
+    $verify_result = db_select('authmap', 'a')
+      ->fields('a', array('uid', 'module', 'authname'))
+      ->condition('uid', $account->uid)
+      ->condition('module', 'openid_connect_' . $client_name)
+      ->condition('authname', $sub)
+      ->execute()
+      ->fetchAssoc();
+      
+    if ($verify_result) {
+      watchdog('openid_connect', '[%time] Connection verified successfully: @result', 
+        array('%time' => $timestamp, '@result' => print_r($verify_result, TRUE)), WATCHDOG_DEBUG);
+      return TRUE;
+    } else {
+      watchdog('openid_connect', '[%time] Connection verification failed - no matching record found', 
+        array('%time' => $timestamp), WATCHDOG_ERROR);
+      return FALSE;
+    }
+  }
+  catch (Exception $e) {
+    watchdog('openid_connect', '[%time] Exception during connection: @error', 
+      array('%time' => $timestamp, '@error' => $e->getMessage()), WATCHDOG_ERROR);
+    return FALSE;
+  }
 }
 
 /**
@@ -1062,7 +1297,7 @@ function openid_connect_complete_authorization($client, $tokens, $destination) {
 
   $user_data = $client->decodeIdToken($tokens['id_token']);
   $userinfo = $client->retrieveUserInfo($tokens['access_token']);
-  watchdog('openid_connect', 'Retrieved user data and userinfo in openid_connect_complete_authorization', array(), WATCHDOG_DEBUG);
+  watchdog('openid_connect', 'Retrieved user data and userinfo: @data', array('@data' => print_r($userinfo, TRUE)), WATCHDOG_DEBUG);
 
   if (empty($userinfo['email'])) {
     watchdog('openid_connect', 'No e-mail address provided by @provider', array('@provider' => $client->getLabel()), WATCHDOG_ERROR);
@@ -1084,9 +1319,9 @@ function openid_connect_complete_authorization($client, $tokens, $destination) {
 
   $account = openid_connect_user_load_by_sub($sub, $client->getName());
   watchdog('openid_connect', 'Loaded account by sub in openid_connect_complete_authorization: %uid', array('%uid' => $account ? $account->uid : 'not found'), WATCHDOG_DEBUG);
+  watchdog('openid_connect', 'Account details after loading by sub: @account', array('@account' => print_r($account, TRUE)), WATCHDOG_DEBUG);
   
   $results = module_invoke_all('openid_connect_pre_authorize', $tokens, $account, $userinfo, $client->getName());
-  watchdog('openid_connect', 'Pre-authorize hook results in openid_connect_complete_authorization: %results', array('%results' => print_r($results, TRUE)), WATCHDOG_DEBUG);
 
   // Deny access if any module returns FALSE.
   if (in_array(FALSE, $results, TRUE)) {
@@ -1105,8 +1340,13 @@ function openid_connect_complete_authorization($client, $tokens, $destination) {
   elseif ($account = user_load_by_mail($userinfo['email'])) {
     // Check whether there is an e-mail address conflict.
     watchdog('openid_connect', 'Account found by email in openid_connect_complete_authorization: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
+    watchdog('openid_connect', 'Account details after loading by email: @account', array('@account' => print_r($account, TRUE)), WATCHDOG_DEBUG);
     if ($config->get('openid_connect_connect_existing_users')) {
-      openid_connect_connect_account($account, $client->getName(), $sub);
+      $result = openid_connect_connect_account($account, $client->getName(), $sub);
+      if (!$result) {
+        watchdog('openid_connect', 'Failed to connect existing account', array(), WATCHDOG_ERROR);
+        return FALSE;
+      }
       $account_is_new = FALSE;
     }
     else {
@@ -1118,14 +1358,85 @@ function openid_connect_complete_authorization($client, $tokens, $destination) {
     // Create a new account.
     watchdog('openid_connect', 'Creating new account in openid_connect_complete_authorization', array(), WATCHDOG_DEBUG);
     $account = openid_connect_create_user($sub, $userinfo, $client->getName());
-    // Reload $account in case it has been altered in a user hook elsewhere.
+    if (!$account) {
+      watchdog('openid_connect', 'Failed to create new account', array(), WATCHDOG_ERROR);
+      return FALSE;
+    }
+    
+    // Connect the new account
+    $result = openid_connect_connect_account($account, $client->getName(), $sub);
+    if (!$result) {
+      watchdog('openid_connect', 'Failed to connect new account', array(), WATCHDOG_ERROR);
+      return FALSE;
+    }
+    
+    // Reload the account to ensure we have all properties
     $account = user_load($account->uid);
-    openid_connect_save_userinfo($account, $userinfo);
+    if (!$account) {
+      watchdog('openid_connect', 'Failed to load newly created user', array(), WATCHDOG_ERROR);
+      return FALSE;
+    }
+    
     $account_is_new = TRUE;
   }
 
   watchdog('openid_connect', 'Logging in user in openid_connect_complete_authorization: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
-  openid_connect_login_user($account, $destination);
+  
+  // Initialize the user's session
+  global $user;
+  $loaded_user = user_load($account->uid);
+  if (!$loaded_user) {
+    watchdog('openid_connect', 'Failed to load user for login: %uid', array('%uid' => $account->uid), WATCHDOG_ERROR);
+    return FALSE;
+  }
+  watchdog('openid_connect', 'Loaded user for login: @user', array('@user' => print_r($loaded_user, TRUE)), WATCHDOG_DEBUG);
+  
+  // Start session if needed
+  if (!backdrop_session_started()) {
+    backdrop_session_start();
+    watchdog('openid_connect', 'Started new session for login', array(), WATCHDOG_DEBUG);
+  }
+  
+  // Set the global user object first
+  $user = $loaded_user;
+  $GLOBALS['user'] = $loaded_user;
+  
+  watchdog('openid_connect', 'Global user set to: @user', array('@user' => print_r($GLOBALS['user'], TRUE)), WATCHDOG_DEBUG);
+  
+  // Ensure all required properties are set
+  if (!isset($user->timezone)) {
+    $user->timezone = config_get('system.date', 'default_timezone');
+  }
+  
+  // Initialize the session before finalization
+  $_SESSION['uid'] = $user->uid;
+  $_SESSION['roles'] = array_keys($user->roles);
+  $_SESSION['name'] = $user->name;
+  
+  watchdog('openid_connect', 'Session data before finalize: @session', array('@session' => print_r($_SESSION, TRUE)), WATCHDOG_DEBUG);
+  
+  // Finalize the login which will properly set up the session
+  $edit = array();
+  user_login_finalize($edit);
+  
+  // Double check session data
+  watchdog('openid_connect', 'Session data after finalize: @session', array('@session' => print_r($_SESSION, TRUE)), WATCHDOG_DEBUG);
+  
+  // Update the user's last login time
+  $user->login = REQUEST_TIME;
+  user_save($user);
+  
+  watchdog('openid_connect', 'Login completed - Current user: @user', array('@user' => print_r($GLOBALS['user'], TRUE)), WATCHDOG_DEBUG);
+  
+  // Check if user is logged in
+  $is_logged_in = user_is_logged_in();
+  watchdog('openid_connect', 'User login status after login attempt: %status', array('%status' => $is_logged_in ? 'logged in' : 'not logged in'), WATCHDOG_DEBUG);
+  
+  if (!$is_logged_in) {
+    watchdog('openid_connect', 'Failed to log in user after successful authorization. Current user: @user', 
+      array('@user' => print_r($GLOBALS['user'], TRUE)), WATCHDOG_ERROR);
+    return FALSE;
+  }
 
   module_invoke_all('openid_connect_post_authorize', $tokens, $account, $userinfo, $client->getName(), $account_is_new);
   watchdog('openid_connect', 'Completed authorization in openid_connect_complete_authorization', array(), WATCHDOG_DEBUG);

@@ -30,11 +30,8 @@ function openid_connect_redirect_page($client_name) {
     watchdog('openid_connect', 'Started new session in redirect page', array(), WATCHDOG_DEBUG);
   }
 
-  watchdog('openid_connect', 'Redirect page called. Session status: %status, Session ID: %sid', 
-    array(
-      '%status' => session_status(),
-      '%sid' => session_id()
-    ), WATCHDOG_DEBUG);
+  watchdog('openid_connect', 'Redirect page called with params: @params', 
+    array('@params' => print_r($_GET, TRUE)), WATCHDOG_DEBUG);
 
   if (!isset($_GET['error']) && !isset($_GET['code'])) {
     watchdog('openid_connect', 'Missing code or error parameters', array(), WATCHDOG_ERROR);
@@ -58,17 +55,19 @@ function openid_connect_redirect_page($client_name) {
     return;
   }
 
+  watchdog('openid_connect', 'Client loaded successfully: %client', array('%client' => $client_name), WATCHDOG_DEBUG);
+
   // Verify the state parameter
   if (!isset($_GET['state'])) {
-    watchdog('openid_connect', 'Missing state parameter', array(), WATCHDOG_ERROR);
+    watchdog('openid_connect', 'Missing state parameter in request', array(), WATCHDOG_ERROR);
     backdrop_set_message(t('Your login session has expired. Please try logging in again.'), 'error');
     backdrop_goto('user/login', array('query' => array()));
     return;
   }
 
   if (!isset($_SESSION['openid_connect_state'])) {
-    watchdog('openid_connect', 'No state token in session. Session ID: %sid', 
-      array('%sid' => session_id()), WATCHDOG_ERROR);
+    watchdog('openid_connect', 'No state token in session. Session data: @session', 
+      array('@session' => print_r($_SESSION, TRUE)), WATCHDOG_ERROR);
     backdrop_set_message(t('Your login session has expired. Please try logging in again.'), 'error');
     backdrop_goto('user/login', array('query' => array()));
     return;
@@ -91,6 +90,8 @@ function openid_connect_redirect_page($client_name) {
     return;
   }
 
+  watchdog('openid_connect', 'State token validated successfully', array(), WATCHDOG_DEBUG);
+
   // Clear the state token after successful validation
   $state = $_SESSION['openid_connect_state'];
   unset($_SESSION['openid_connect_state']);
@@ -98,10 +99,18 @@ function openid_connect_redirect_page($client_name) {
 
   // Use destination from session if available, default to 'user' if not set
   $destination = isset($_SESSION['openid_connect_destination']) ? $_SESSION['openid_connect_destination'] : array('path' => 'user', 'query' => array());
+  
+  watchdog('openid_connect', 'Retrieved destination before token exchange: @dest', 
+    array('@dest' => print_r($destination, TRUE)), WATCHDOG_DEBUG);
+  
   unset($_SESSION['openid_connect_destination']);
 
   // Retrieve tokens and store the result
+  watchdog('openid_connect', 'Starting token retrieval with code: %code', 
+    array('%code' => $_GET['code']), WATCHDOG_DEBUG);
+    
   $tokens = $client->retrieveTokens($_GET['code']);
+  
   if (!$tokens) {
     watchdog('openid_connect', 'Failed to retrieve tokens', array(), WATCHDOG_ERROR);
     backdrop_set_message(t('Failed to complete authentication. Please try logging in again.'), 'error');
@@ -109,12 +118,34 @@ function openid_connect_redirect_page($client_name) {
     return;
   }
 
+  watchdog('openid_connect', 'Successfully retrieved tokens: @tokens', 
+    array('@tokens' => print_r($tokens, TRUE)), WATCHDOG_DEBUG);
+
   // Complete the authorization
   try {
+    watchdog('openid_connect', 'Starting authorization completion with client: %client', 
+      array('%client' => $client->getName()), WATCHDOG_DEBUG);
+      
+    watchdog('openid_connect', 'Authorization parameters - Tokens: @tokens, Destination: @destination', 
+      array(
+        '@tokens' => print_r($tokens, TRUE),
+        '@destination' => print_r($destination, TRUE)
+      ), WATCHDOG_DEBUG);
+      
     $success = openid_connect_complete_authorization($client, $tokens, $destination);
+    
+    watchdog('openid_connect', 'Authorization completion result: %result', 
+      array('%result' => $success ? 'success' : 'failure'), WATCHDOG_DEBUG);
+      
+    if (!$success) {
+      watchdog('openid_connect', 'Authorization failed - Current user state: @user', 
+        array('@user' => print_r($GLOBALS['user'], TRUE)), WATCHDOG_ERROR);
+    }
   }
   catch (Exception $e) {
     watchdog_exception('openid_connect', $e);
+    watchdog('openid_connect', 'Exception during authorization: @error', 
+      array('@error' => $e->getMessage()), WATCHDOG_ERROR);
     backdrop_set_message(t('An error occurred during authentication. Please try logging in again.'), 'error');
     backdrop_goto('user/login', array('query' => array()));
     return;
@@ -125,19 +156,40 @@ function openid_connect_redirect_page($client_name) {
     if (is_string($destination)) {
       $path = $destination;
       $options = array('query' => array());
+      watchdog('openid_connect', 'Destination is string: %path', array('%path' => $path), WATCHDOG_DEBUG);
     }
     elseif (is_array($destination) && isset($destination['path'])) {
       $path = $destination['path'];
       $options = isset($destination['query']) ? array('query' => $destination['query']) : array('query' => array());
+      watchdog('openid_connect', 'Destination is array with path: %path, options: @options', 
+        array(
+          '%path' => $path,
+          '@options' => print_r($options, TRUE)
+        ), WATCHDOG_DEBUG);
     }
     else {
       $path = 'user';
       $options = array('query' => array());
+      watchdog('openid_connect', 'Destination is invalid, defaulting to user page. Original destination: @dest', 
+        array('@dest' => print_r($destination, TRUE)), WATCHDOG_DEBUG);
     }
+    
+    // Log final redirect details
+    watchdog('openid_connect', 'Final redirect - Path: %path, Options: @options', 
+      array(
+        '%path' => $path,
+        '@options' => print_r($options, TRUE)
+      ), WATCHDOG_DEBUG);
+      
     backdrop_goto($path, $options);
     return;
   }
 
+  watchdog('openid_connect', 'Final authorization failure - User status: @user, Session: @session', 
+    array(
+      '@user' => print_r($GLOBALS['user'], TRUE),
+      '@session' => print_r($_SESSION, TRUE)
+    ), WATCHDOG_ERROR);
   backdrop_set_message(t('Authentication failed. Please try logging in again.'), 'error');
   backdrop_goto('user/login', array('query' => array()));
   return;
