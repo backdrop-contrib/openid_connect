@@ -437,38 +437,75 @@ function openid_connect_save_user_picture($account, $picture_url) {
  */
 function openid_connect_login_user($account, $destination) {
   watchdog('openid_connect', 'Starting login in openid_connect_login_user for user: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
+  
+  // Ensure we have a valid user account
+  if (!$account->uid) {
+    watchdog('openid_connect', 'Invalid account passed to login function', array(), WATCHDOG_ERROR);
+    return FALSE;
+  }
+
+  // Start session if needed
+  if (!backdrop_session_started()) {
+    backdrop_session_start();
+    watchdog('openid_connect', 'Started new session for login', array(), WATCHDOG_DEBUG);
+  }
+
+  // Initialize the session
+  $_SESSION['uid'] = $account->uid;
+  $_SESSION['roles'] = array_keys($account->roles);
+  $_SESSION['name'] = $account->name;
+  
+  watchdog('openid_connect', 'Session initialized with data: @session', array('@session' => print_r($_SESSION, TRUE)), WATCHDOG_DEBUG);
+
+  // Set the global user object
+  global $user;
+  $user = $account;
+  
+  watchdog('openid_connect', 'Global user set to: @user', array('@user' => print_r($user, TRUE)), WATCHDOG_DEBUG);
+
+  $form_state = array();
   $form_state['uid'] = $account->uid;
   $form = array();
 
   // TFA integration.
-
-
   if (module_exists('tfa')) {
     // The 'code' and 'state' parameters have now been used.
-
-
     unset($_GET['code'], $_GET['state']);
 
     // TFA will preserve the initial redirect if it is set in the $form_state.
-
-
     $form_state['redirect'] = $destination;
 
     tfa_login_submit($form, $form_state);
     tfa_login_form_redirect($form, $form_state);
 
     // TFA may want to change the redirect destination.
-
-
     if (isset($form_state['redirect']) && $form_state['redirect'] != 'user/' . $form_state['uid']) {
       $destination = $form_state['redirect'];
     }
   }
   else {
-    watchdog('openid_connect', 'Proceeding with standard login', array(), WATCHDOG_DEBUG);
-    user_login_submit($form, $form_state);
+    // Standard login process
+    watchdog('openid_connect', 'Proceeding with standard login for uid: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
+    
+    // Finalize the login
+    user_login_finalize($form_state);
+    
+    // Update the user's last login time
+    $account->login = REQUEST_TIME;
+    user_save($account);
+    
+    watchdog('openid_connect', 'Login finalized for uid: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
   }
-  watchdog('openid_connect', 'Completed login in openid_connect_login_user', array(), WATCHDOG_DEBUG);
+
+  // Verify login was successful
+  if (!user_is_logged_in()) {
+    watchdog('openid_connect', 'Login failed - user not logged in after finalization. Session: @session', 
+      array('@session' => print_r($_SESSION, TRUE)), WATCHDOG_ERROR);
+    return FALSE;
+  }
+
+  watchdog('openid_connect', 'Login successful for uid: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
+  return TRUE;
 }
 
 /**
@@ -539,7 +576,7 @@ function openid_connect_save_destination() {
  *   The user object or FALSE on failure.
  */
 function openid_connect_create_user($sub, $userinfo, $client_name) {
-  watchdog('openid_connect', 'Creating new user in openid_connect_create_user for sub: %sub', array('%sub' => $sub), WATCHDOG_DEBUG);
+  watchdog('openid_connect', 'Starting user creation process for sub: %sub', array('%sub' => $sub), WATCHDOG_DEBUG);
   
   // Validate required information
   if (empty($userinfo['email'])) {
@@ -548,9 +585,30 @@ function openid_connect_create_user($sub, $userinfo, $client_name) {
   }
 
   try {
+    // Check if user with this email already exists
+    $existing_user = user_load_by_mail($userinfo['email']);
+    if ($existing_user) {
+      watchdog('openid_connect', 'User with email %email already exists (uid: %uid)', 
+        array('%email' => $userinfo['email'], '%uid' => $existing_user->uid), WATCHDOG_ERROR);
+      return FALSE;
+    }
+
     // Generate username if needed
     $username = openid_connect_generate_username($sub, $userinfo, $client_name);
     watchdog('openid_connect', 'Generated username: %username', array('%username' => $username), WATCHDOG_DEBUG);
+    
+    // Check if username already exists
+    $existing_name = db_select('users', 'u')
+      ->fields('u', array('uid', 'name'))
+      ->condition('name', $username)
+      ->execute()
+      ->fetchObject();
+      
+    if ($existing_name) {
+      watchdog('openid_connect', 'Username %username already exists (uid: %uid)', 
+        array('%username' => $username, '%uid' => $existing_name->uid), WATCHDOG_ERROR);
+      return FALSE;
+    }
     
     // Create base user fields array with minimal required fields
     $fields = array(
@@ -598,96 +656,96 @@ function openid_connect_create_user($sub, $userinfo, $client_name) {
     $fields['data']['openid_connect_client'] = $client_name;
     $fields['data']['openid_connect_sub'] = $sub;
     
-    // Create a new user object
-    $account = new User();
-    $account->is_new = TRUE;
+    // Log the fields array before user creation
+    watchdog('openid_connect', 'Attempting to create user with fields: @fields', 
+      array('@fields' => print_r($fields, TRUE)), WATCHDOG_DEBUG);
+
+    // Create a new user account
+    watchdog('openid_connect', 'Creating user entity...', array(), WATCHDOG_DEBUG);
+    $account = entity_create('user', $fields);
     
-    // Set all the base fields
-    foreach ($fields as $key => $value) {
-      $account->{$key} = $value;
+    if (!$account) {
+      watchdog('openid_connect', 'Failed to create user entity', array(), WATCHDOG_ERROR);
+      return FALSE;
     }
     
-     // Log the account object for debugging
-      watchdog('openid_connect', 'Account object before user_save(): @account', 
-        array('@account' => print_r($account, TRUE)), WATCHDOG_DEBUG);
+    watchdog('openid_connect', 'User entity created, pre-save state: @account', 
+      array('@account' => print_r($account, TRUE)), WATCHDOG_DEBUG);
 
-
-    // Add uid to fields array
-    $fields['uid'] = $account->uid;
+    // Save the new user account
+    watchdog('openid_connect', 'Attempting to save user...', array(), WATCHDOG_DEBUG);
+    $save_result = user_save($account);
     
-    watchdog('openid_connect', 'Attempting to create user with fields - please check for uid: @data', 
-      array('@data' => print_r($fields, TRUE)), WATCHDOG_DEBUG);
+    watchdog('openid_connect', 'user_save() result: @result', 
+      array('@result' => print_r($save_result, TRUE)), WATCHDOG_DEBUG);
     
-    try {
-      // First validate that we have all required fields
-      if (empty($account->name) || empty($account->mail)) {
-        watchdog('openid_connect', 'Missing required fields - name: %name, mail: %mail', 
-          array('%name' => $account->name, '%mail' => $account->mail), WATCHDOG_ERROR);
-        return FALSE;
-      }
-
-      // Check if username already exists
-      $existing = db_select('users', 'u')
-        ->fields('u', array('uid', 'name'))
-        ->condition('name', $account->name)
+    // Handle the case where user_save returns 1 (success) instead of the account object
+    if ($save_result === 1) {
+      watchdog('openid_connect', 'user_save() returned 1, loading user by name', array(), WATCHDOG_DEBUG);
+      
+      // Load the user by username since we know it's unique
+      $saved_account = db_select('users', 'u')
+        ->fields('u', array('uid'))
+        ->condition('name', $username)
         ->execute()
         ->fetchObject();
-      
-      if ($existing) {
-        watchdog('openid_connect', 'Username already exists: %name (uid: %uid)', 
-          array('%name' => $existing->name, '%uid' => $existing->uid), WATCHDOG_ERROR);
-        return FALSE;
-      }
-
-      // Try to save the user
-      $saved_account = user_save($account);
-      
+        
       if (!$saved_account) {
-        watchdog('openid_connect', 'user_save() returned NULL', array(), WATCHDOG_ERROR);
+        watchdog('openid_connect', 'Could not find newly created user by username: %name', 
+          array('%name' => $username), WATCHDOG_ERROR);
         return FALSE;
       }
       
-      if (!isset($saved_account->uid)) {
-        watchdog('openid_connect', 'user_save() returned account without uid. Account: @account', 
-          array('@account' => print_r($saved_account, TRUE)), WATCHDOG_ERROR);
-        return FALSE;
-      }
-
-      // Log the account object for debugging
-      watchdog('openid_connect', 'Account object after user_save() - original $account: @account', 
-        array('@account' => print_r($account, TRUE)), WATCHDOG_DEBUG);
-
-      // Update the uid in the fields array with the actual uid from the saved account
-      $fields['uid'] = $saved_account->uid;
-      
-      // Log the fields array with the actual uid
-      watchdog('openid_connect', 'User created with fields: @data', 
-        array('@data' => print_r($fields, TRUE)), WATCHDOG_DEBUG);
-
-      // Reload the account to ensure we have all properties
-      $saved_account = user_load($saved_account->uid);
-      if (!$saved_account) {
-        watchdog('openid_connect', 'Failed to load newly created user', array(), WATCHDOG_ERROR);
-        return FALSE;
-      }
-
-      watchdog('openid_connect', 'Successfully created user account with uid: %uid', 
+      watchdog('openid_connect', 'Found user in database with uid: %uid', 
         array('%uid' => $saved_account->uid), WATCHDOG_DEBUG);
         
-      return $saved_account;
+        $saved_account = user_load($saved_account->uid);
+    } else {
+      $saved_account = $save_result;
     }
-    catch (PDOException $e) {
-      watchdog('openid_connect', 'Database error in user_save(): @error', 
-        array('@error' => $e->getMessage()), WATCHDOG_ERROR);
+    
+    // Verify the saved account
+    if (!$saved_account) {
+      watchdog('openid_connect', 'Failed to load saved account', array(), WATCHDOG_ERROR);
       return FALSE;
     }
-    catch (Exception $e) {
-      watchdog('openid_connect', 'Error in user_save(): @error', 
-        array('@error' => $e->getMessage()), WATCHDOG_ERROR);
+    
+    if (!isset($saved_account->uid) || empty($saved_account->uid)) {
+      watchdog('openid_connect', 'Saved account has no valid UID. Account: @account', 
+        array('@account' => print_r($saved_account, TRUE)), WATCHDOG_ERROR);
       return FALSE;
     }
-  }
-  catch (Exception $e) {
+
+    // Double check the user exists in the database
+    $check_user = db_select('users', 'u')
+      ->fields('u', array('uid', 'name', 'mail'))
+      ->condition('uid', $saved_account->uid)
+      ->execute()
+      ->fetchObject();
+      
+    if (!$check_user) {
+      watchdog('openid_connect', 'User not found in database after save. UID: %uid', 
+        array('%uid' => $saved_account->uid), WATCHDOG_ERROR);
+      return FALSE;
+    }
+    
+    watchdog('openid_connect', 'Database verification successful. User record: @user', 
+      array('@user' => print_r($check_user, TRUE)), WATCHDOG_DEBUG);
+
+    // Load the full user object to ensure we have all properties
+    $full_account = user_load($saved_account->uid);
+    if (!$full_account) {
+      watchdog('openid_connect', 'Failed to load newly created user %uid', 
+        array('%uid' => $saved_account->uid), WATCHDOG_ERROR);
+      return FALSE;
+    }
+
+    watchdog('openid_connect', 'Successfully created and loaded user account: @account', 
+      array('@account' => print_r($full_account, TRUE)), WATCHDOG_DEBUG);
+
+    return $full_account;
+
+  } catch (Exception $e) {
     watchdog('openid_connect', 'Error creating user account: @message', 
       array('@message' => $e->getMessage()), WATCHDOG_ERROR);
     return FALSE;
