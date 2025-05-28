@@ -335,18 +335,48 @@ function openid_connect_save_userinfo($account, $userinfo) {
   $account_wrapper = entity_metadata_wrapper('user', $account);
   $properties = $account_wrapper->getPropertyInfo();
   $properties_skip = _openid_connect_user_properties_to_skip();
+  
+  watchdog('openid_connect', 'Available properties for mapping: @properties', array('@properties' => print_r($properties, TRUE)), WATCHDOG_DEBUG);
+  watchdog('openid_connect', 'Properties to skip: @skip', array('@skip' => print_r($properties_skip, TRUE)), WATCHDOG_DEBUG);
+  
   foreach ($properties as $property_name => $property) {
     if (isset($properties_skip[$property_name])) {
+      watchdog('openid_connect', 'Skipping property: %property', array('%property' => $property_name), WATCHDOG_DEBUG);
       continue;
     }
     $claim = $config->get('openid_connect_userinfo_mapping_property_' . $property_name);
-    if ($claim && isset($userinfo[$claim])) {
+    watchdog('openid_connect', 'Checking property: %property, mapped claim: %claim', 
+      array('%property' => $property_name, '%claim' => $claim), WATCHDOG_DEBUG);
+    
+    if ($claim && (
+          $property_name === 'field_state' ||
+          $property_name === 'field_country' ||
+          isset($userinfo[$claim])
+        )) {
       try {
-        $account_wrapper->{$property_name} = $userinfo[$claim];
-        watchdog('openid_connect', 'Set property %property to %value in openid_connect_save_userinfo', 
-          array('%property' => $property_name, '%value' => $userinfo[$claim]), WATCHDOG_DEBUG);
+        // OpenID Connect spec: address fields are nested
+        if ($property_name === 'field_state') {
+          $value = isset($userinfo['address']['region']) ? $userinfo['address']['region'] : '';
+          watchdog('openid_connect', 'Mapping field_state from address.region: %value', array('%value' => $value), WATCHDOG_DEBUG);
+          $account_wrapper->{$property_name} = $value;
+        } else if ($property_name === 'field_country') {
+          $value = isset($userinfo['address']['country']) ? $userinfo['address']['country'] : '';
+          watchdog('openid_connect', 'Mapping field_country from address.country: %value', array('%value' => $value), WATCHDOG_DEBUG);
+          $account_wrapper->{$property_name} = $value;
+        } else {
+          $account_wrapper->{$property_name} = $userinfo[$claim];
+        }
+        if ($property_name === 'field_state' || $property_name === 'field_country') {
+          watchdog('openid_connect', 'Successfully mapped %field', array('%field' => $property_name), WATCHDOG_DEBUG);
+        }
       }
       catch (EntityMetadataWrapperException $e) {
+        if ($property_name === 'field_state' || $property_name === 'field_country') {
+          watchdog('openid_connect', 'Error mapping %field: @error', 
+            array('%field' => $property_name, '@error' => $e->getMessage()), 
+            WATCHDOG_ERROR
+          );
+        }
         watchdog_exception('openid_connect', $e);
       }
     }
@@ -354,13 +384,19 @@ function openid_connect_save_userinfo($account, $userinfo) {
 
   if (isset($userinfo['name'])) {
     $account->data['oidc_name'] = $userinfo['name'];
-    watchdog('openid_connect', 'Set oidc_name in openid_connect_save_userinfo: %name', array('%name' => $userinfo['name']), WATCHDOG_DEBUG);
+    watchdog('openid_connect', 'Set oidc_name: %name', array('%name' => $userinfo['name']), WATCHDOG_DEBUG);
   }
 
-  $account_wrapper->save();
-  watchdog('openid_connect', 'Saved account wrapper in openid_connect_save_userinfo', array(), WATCHDOG_DEBUG);
+  try {
+    $account_wrapper->save();
+    watchdog('openid_connect', 'Successfully saved account wrapper', array(), WATCHDOG_DEBUG);
+  }
+  catch (Exception $e) {
+    watchdog('openid_connect', 'Error saving account wrapper: @error', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
+  }
 
   if (config_get('system.performance', 'user_pictures') && $config->get('openid_connect_user_pictures') && !empty($userinfo['picture'])) {
+    watchdog('openid_connect', 'Attempting to save user picture from URL: %url', array('%url' => $userinfo['picture']), WATCHDOG_DEBUG);
     openid_connect_save_user_picture($account, $userinfo['picture']);
   }
 }
@@ -1021,6 +1057,12 @@ function openid_connect_claims() {
     'address' => array(
       'scope' => 'address',
     ),
+    'state' => array(
+      'scope' => 'address',
+    ),
+    'country' => array(
+      'scope' => 'address',
+    ),
     'phone_number' => array(
       'scope' => 'phone',
     ),
@@ -1053,7 +1095,7 @@ function openid_connect_claims_options() {
  */
 function openid_connect_get_scopes() {
   $claims = config_get('openid_connect.settings', 'openid_connect_userinfo_mapping_claims');
-  $scopes = array('openid', 'email');
+  $scopes = array('openid', 'email', 'profile', 'address');
   $claims_info = openid_connect_claims();
   foreach ($claims as $claim) {
     if (isset($claims_info[$claim]) && !isset($scopes[$claims_info[$claim]['scope']]) && $claim != 'email') {
@@ -1061,7 +1103,9 @@ function openid_connect_get_scopes() {
     }
   }
 
-  return implode(' ', $scopes);
+  $final_scopes = implode(' ', $scopes);
+  watchdog('openid_connect', 'Requesting OIDC scopes: %scopes', array('%scopes' => $final_scopes), WATCHDOG_DEBUG);
+  return $final_scopes;
 }
 
 /**
@@ -1091,6 +1135,14 @@ function _openid_connect_user_properties() {
     ),
     'field_last_name' => array(
       'title' => t('Last Name'),
+      'type' => 'string',
+    ),
+    'field_state' => array(
+      'title' => t('State'),
+      'type' => 'string',
+    ),
+    'field_country' => array(
+      'title' => t('Country'),
       'type' => 'string',
     ),
   );
@@ -1355,7 +1407,32 @@ function openid_connect_complete_authorization($client, $tokens, $destination) {
 
   $user_data = $client->decodeIdToken($tokens['id_token']);
   $userinfo = $client->retrieveUserInfo($tokens['access_token']);
-  watchdog('openid_connect', 'Retrieved user data and userinfo: @data', array('@data' => print_r($userinfo, TRUE)), WATCHDOG_DEBUG);
+  
+  // Log complete userinfo response
+  watchdog('openid_connect', 'Complete userinfo response from server: @userinfo', 
+    array('@userinfo' => print_r($userinfo, TRUE)), 
+    WATCHDOG_DEBUG
+  );
+  
+  // Specifically log address-related fields
+  if (isset($userinfo['address'])) {
+    watchdog('openid_connect', 'Address data received: @address', 
+      array('@address' => print_r($userinfo['address'], TRUE)), 
+      WATCHDOG_DEBUG
+    );
+  }
+  if (isset($userinfo['state'])) {
+    watchdog('openid_connect', 'State received: %state', 
+      array('%state' => $userinfo['state']), 
+      WATCHDOG_DEBUG
+    );
+  }
+  if (isset($userinfo['country'])) {
+    watchdog('openid_connect', 'Country received: %country', 
+      array('%country' => $userinfo['country']), 
+      WATCHDOG_DEBUG
+    );
+  }
 
   if (empty($userinfo['email'])) {
     watchdog('openid_connect', 'No e-mail address provided by @provider', array('@provider' => $client->getLabel()), WATCHDOG_ERROR);
