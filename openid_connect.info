@@ -8,4 +8,5 @@ package = "OAuth2"
 configure = admin/config/services/openid-connect
 
 dependencies[] = entity
-
+dependencies[] = entity_ui
+dependencies[] = entity_plus
