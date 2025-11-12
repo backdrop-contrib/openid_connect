@@ -330,6 +330,7 @@ function openid_connect_connected_accounts_access($account) {
  * Saves user profile information into a user account.
  */
 function openid_connect_save_userinfo($account, $userinfo) {
+  
   watchdog('openid_connect', 'Starting to save userinfo in openid_connect_save_userinfo for user: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
   $config = config('openid_connect.settings');
   $account_wrapper = entity_metadata_wrapper('user', $account);
@@ -347,40 +348,19 @@ function openid_connect_save_userinfo($account, $userinfo) {
     $claim = $config->get('openid_connect_userinfo_mapping_property_' . $property_name);
     watchdog('openid_connect', 'Checking property: %property, mapped claim: %claim', 
       array('%property' => $property_name, '%claim' => $claim), WATCHDOG_DEBUG);
-    
-    if ($claim && (
-          $property_name === 'field_state' ||
-          $property_name === 'field_country' ||
-          isset($userinfo[$claim])
-        )) {
+
+    if ($claim && isset($userinfo[$claim])) {
       try {
-        // OpenID Connect spec: address fields are nested
-        if ($property_name === 'field_state') {
-          $value = isset($userinfo['address']['region']) ? $userinfo['address']['region'] : '';
-          watchdog('openid_connect', 'Mapping field_state from address.region: %value', array('%value' => $value), WATCHDOG_DEBUG);
-          $account_wrapper->{$property_name} = $value;
-        } else if ($property_name === 'field_country') {
-          $value = isset($userinfo['address']['country']) ? $userinfo['address']['country'] : '';
-          watchdog('openid_connect', 'Mapping field_country from address.country: %value', array('%value' => $value), WATCHDOG_DEBUG);
-          $account_wrapper->{$property_name} = $value;
-        } else {
-          $account_wrapper->{$property_name} = $userinfo[$claim];
-        }
-        if ($property_name === 'field_state' || $property_name === 'field_country') {
-          watchdog('openid_connect', 'Successfully mapped %field', array('%field' => $property_name), WATCHDOG_DEBUG);
-        }
+        $account_wrapper->{$property_name} = $userinfo[$claim];
       }
       catch (EntityMetadataWrapperException $e) {
-        if ($property_name === 'field_state' || $property_name === 'field_country') {
-          watchdog('openid_connect', 'Error mapping %field: @error', 
-            array('%field' => $property_name, '@error' => $e->getMessage()), 
-            WATCHDOG_ERROR
-          );
-        }
         watchdog_exception('openid_connect', $e);
       }
     }
   }
+
+  // allow CMQCC (or other submodules) to alter user account
+  backdrop_alter('openid_connect_save_userinfo', $account_wrapper, $userinfo);
 
   if (isset($userinfo['name'])) {
     $account->data['oidc_name'] = $userinfo['name'];
@@ -1057,12 +1037,6 @@ function openid_connect_claims() {
     'address' => array(
       'scope' => 'address',
     ),
-    'state' => array(
-      'scope' => 'address',
-    ),
-    'country' => array(
-      'scope' => 'address',
-    ),
     'phone_number' => array(
       'scope' => 'phone',
     ),
@@ -1137,17 +1111,9 @@ function _openid_connect_user_properties() {
       'title' => t('Last Name'),
       'type' => 'string',
     ),
-    'field_state' => array(
-      'title' => t('State'),
-      'type' => 'string',
-    ),
-    'field_country' => array(
-      'title' => t('Country'),
-      'type' => 'string',
-    ),
   );
   
-  backdrop_alter('openid_connect_user_properties', $properties);
+  backdrop_alter(__FUNCTION__, $properties);
   return $properties;
 }
 
