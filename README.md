@@ -11,4 +11,5 @@ New users can register to your site using the login providers.
 
 For more information consult the 
 - OpenID Connect documenation https://openid.net/specs/openid-connect-core-1_0.html#StandardClaims
+- Module flow details in docs folder https://github.com/backdrop-contrib/openid_connect/tree/main/docs  
 - Some Drupal documentation might be related: https://drupal.org/node/2274339
