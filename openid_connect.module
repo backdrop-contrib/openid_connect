@@ -336,22 +336,48 @@ function openid_connect_save_userinfo($account, $userinfo) {
   $account_wrapper = entity_metadata_wrapper('user', $account);
   $properties = $account_wrapper->getPropertyInfo();
   $properties_skip = _openid_connect_user_properties_to_skip();
-  
-  watchdog('openid_connect', 'Available properties for mapping: @properties', array('@properties' => print_r($properties, TRUE)), WATCHDOG_DEBUG);
-  watchdog('openid_connect', 'Properties to skip: @skip', array('@skip' => print_r($properties_skip, TRUE)), WATCHDOG_DEBUG);
-  
+    
+  $userinfo_mappings = $config->get('openid_connect_userinfo_mapping_claims');
+
+  // iterate through known properties of user, grab appropriate ones for mapping
   foreach ($properties as $property_name => $property) {
     if (isset($properties_skip[$property_name])) {
       watchdog('openid_connect', 'Skipping property: %property', array('%property' => $property_name), WATCHDOG_DEBUG);
       continue;
     }
+    
+    // claim will be NULL if no mapping is defined in config
     $claim = $config->get('openid_connect_userinfo_mapping_property_' . $property_name);
     watchdog('openid_connect', 'Checking property: %property, mapped claim: %claim', 
       array('%property' => $property_name, '%claim' => $claim), WATCHDOG_DEBUG);
 
-    if ($claim && isset($userinfo[$claim])) {
+    // map claim value into user account if it exists, otherwise continue
+    if ($claim) {
+      // Support 2-layer nested claims using dot notation (e.g., "address.country")
+      if (strpos($claim, '.') !== FALSE) {
+
+        list($parent, $child) = explode('.', $claim, 2);
+
+        watchdog('openid_connect', 'Claim Parent: %parent, Claim Child: %child', 
+          array('%parent' => $parent, '%child' => $child), WATCHDOG_DEBUG);
+
+        // When handling state, set to NULL if country is NOT US
+        if ($child === 'region' 
+            && isset($userinfo['address']['country'])
+            && $userinfo['address']['country'] !== 'United States') {
+          $claim_value = NULL;
+        } else {
+          $claim_value = isset($userinfo[$parent][$child]) ? $userinfo[$parent][$child] : NULL;
+          watchdog('openid_connect', 'Claim value: %claim', 
+            array('%claim' => $claim_value), WATCHDOG_DEBUG);
+        }
+      } else {
+        $claim_value = isset($userinfo[$claim]) ? $userinfo[$claim] : NULL;
+        watchdog('openid_connect', 'Claim value: %claim', 
+            array('%claim' => $claim_value), WATCHDOG_DEBUG);
+      }
       try {
-        $account_wrapper->{$property_name} = $userinfo[$claim];
+        $account_wrapper->{$property_name} = $claim_value;
       }
       catch (EntityMetadataWrapperException $e) {
         watchdog_exception('openid_connect', $e);
@@ -359,7 +385,7 @@ function openid_connect_save_userinfo($account, $userinfo) {
     }
   }
 
-  // allow CMQCC (or other submodules) to alter user account
+  // allow CMQCC (or other modules) to alter user account
   backdrop_alter('openid_connect_save_userinfo', $account_wrapper, $userinfo);
 
   if (isset($userinfo['name'])) {
@@ -641,27 +667,42 @@ function openid_connect_create_user($sub, $userinfo, $client_name) {
 
     // Get field mappings from configuration
     $config = config('openid_connect.settings');
-    $properties = _openid_connect_user_properties();
-    $properties_skip = _openid_connect_user_properties_to_skip();
-    
+
+    $config_data = $config->get();
+
+    watchdog('openid_connect', 'Full config: @config', 
+      array('@config' => print_r($config_data, TRUE)), WATCHDOG_DEBUG);
+  
     // Get all field instances for user entity
     $instances = field_info_instances('user', 'user');
     
     // Map claims to fields based on configuration
     foreach ($instances as $field_name => $instance) {
-      if (isset($properties_skip[$field_name])) {
-        continue;
-      }
       
+      // checks the config of mappings set by site admin
       $claim = $config->get('openid_connect_userinfo_mapping_property_' . $field_name);
-      if ($claim && isset($userinfo[$claim])) {
-        $fields[$field_name][LANGUAGE_NONE][0]['value'] = $userinfo[$claim];
-        watchdog('openid_connect', 'Mapped claim %claim to field %field with value: %value', 
-          array(
-            '%claim' => $claim,
-            '%field' => $field_name,
-            '%value' => $userinfo[$claim]
-          ), WATCHDOG_DEBUG);
+
+      watchdog('openid_connect', 'Potential claim: @claim', array('@claim' => print_r($claim, TRUE)), WATCHDOG_DEBUG);
+
+      if ($claim) {
+        // Support 2-layer nested claims using dot notation (e.g., "address.country")
+        if (strpos($claim, '.') !== FALSE) {
+          list($parent, $child) = explode('.', $claim, 2);
+          $claim_value = isset($userinfo[$parent][$child]) ? $userinfo[$parent][$child] : NULL;
+        }
+        else {
+          $claim_value = isset($userinfo[$claim]) ? $userinfo[$claim] : NULL;
+        }
+        
+        if ($claim_value !== NULL) {
+          $fields[$field_name][LANGUAGE_NONE][0]['value'] = $claim_value;
+          watchdog('openid_connect', 'Mapped claim %claim to field %field with value: %value', 
+            array(
+              '%claim' => $claim,
+              '%field' => $field_name,
+              '%value' => $claim_value
+            ), WATCHDOG_DEBUG);
+        }
       }
     }
 
@@ -989,10 +1030,10 @@ function openid_connect_claims() {
     'name' => array(
       'scope' => 'profile',
     ),
-    'family_name' => array(
+    'given_name' => array(
       'scope' => 'profile',
     ),
-    'given_name' => array(
+    'family_name' => array(
       'scope' => 'profile',
     ),
     'middle_name' => array(
@@ -1034,9 +1075,27 @@ function openid_connect_claims() {
     'email_verified' => array(
       'scope' => 'email',
     ),
-    'address' => array(
+
+    /*
+     * address info
+     */
+    'address.street_address' => array(
       'scope' => 'address',
     ),
+    'address.locality' => array(
+      'scope' => 'address',
+    ),
+    // this is state by U.S. standards
+    'address.region' => array(
+      'scope' => 'address',
+    ),
+    'address.postal_code' => array(
+      'scope' => 'address',
+    ),
+    'address.country' => array(
+      'scope' => 'address',
+    ),
+
     'phone_number' => array(
       'scope' => 'phone',
     ),
@@ -1083,41 +1142,6 @@ function openid_connect_get_scopes() {
 }
 
 /**
- * Returns user properties that can be mapped to claims.
- */
-function _openid_connect_user_properties() {
-  $properties = array(
-    'name' => array(
-      'title' => t('Username'),
-      'type' => 'string',
-    ),
-    'timezone' => array(
-      'title' => t('Timezone'),
-      'type' => 'string',
-    ),
-    'langcode' => array(
-      'title' => t('Language'),
-      'type' => 'string',
-    ),
-    'preferred_langcode' => array(
-      'title' => t('Preferred language'),
-      'type' => 'string',
-    ),
-    'field_first_name' => array(
-      'title' => t('First Name'),
-      'type' => 'string',
-    ),
-    'field_last_name' => array(
-      'title' => t('Last Name'),
-      'type' => 'string',
-    ),
-  );
-  
-  backdrop_alter(__FUNCTION__, $properties);
-  return $properties;
-}
-
-/**
  * Returns user properties that can be skipped when mapping user profile info.
  */
 function _openid_connect_user_properties_to_skip() {
@@ -1131,6 +1155,8 @@ function _openid_connect_user_properties_to_skip() {
     'roles',
     'status',
     'theme',
+    'field_userclaim',
+    'field_country_and_state',
   );
   return backdrop_map_assoc($properties_to_skip);
 }
@@ -1387,15 +1413,15 @@ function openid_connect_complete_authorization($client, $tokens, $destination) {
       WATCHDOG_DEBUG
     );
   }
-  if (isset($userinfo['state'])) {
+  if (isset($userinfo['address']['region'])) {
     watchdog('openid_connect', 'State received: %state', 
-      array('%state' => $userinfo['state']), 
+      array('%state' => $userinfo['address']['region']), 
       WATCHDOG_DEBUG
     );
   }
-  if (isset($userinfo['country'])) {
+  if (isset($userinfo['address']['country'])) {
     watchdog('openid_connect', 'Country received: %country', 
-      array('%country' => $userinfo['country']), 
+      array('%country' => $userinfo['address']['country']), 
       WATCHDOG_DEBUG
     );
   }
@@ -1433,9 +1459,6 @@ function openid_connect_complete_authorization($client, $tokens, $destination) {
   if ($account) {
     // An existing account was found. Save user claims.
     watchdog('openid_connect', 'Existing account found in openid_connect_complete_authorization: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);
-    if ($config->get('openid_connect_always_save_userinfo')) {
-      openid_connect_save_userinfo($account, $userinfo);
-    }
     $account_is_new = FALSE;
   }
   elseif ($account = user_load_by_mail($userinfo['email'])) {
@@ -1479,6 +1502,11 @@ function openid_connect_complete_authorization($client, $tokens, $destination) {
     }
     
     $account_is_new = TRUE;
+  }
+
+  // save userinfo into account for future
+  if ($config->get('openid_connect_always_save_userinfo')) {
+    openid_connect_save_userinfo($account, $userinfo);
   }
 
   watchdog('openid_connect', 'Logging in user in openid_connect_complete_authorization: %uid', array('%uid' => $account->uid), WATCHDOG_DEBUG);

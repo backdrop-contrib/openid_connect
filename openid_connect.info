@@ -10,3 +10,8 @@ configure = admin/config/services/openid-connect
 dependencies[] = entity
 dependencies[] = entity_ui
 dependencies[] = entity_plus
+
+; Added by Backdrop CMS packaging script on 2025-11-19
+project = openid_connect
+version = 1.x-1.0.0
+timestamp = 1763573324
