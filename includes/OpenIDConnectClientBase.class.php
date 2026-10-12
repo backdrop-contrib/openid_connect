@@ -108,6 +108,15 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    */
   public function getSetting($key, $default = NULL) {
     $value = isset($this->settings[$key]) ? $this->settings[$key] : $default;
+    // Resolve a Key reference at runtime. Never fall back to an inline secret
+    // when a Key has been selected but cannot be resolved.
+    if ($key === 'client_secret' && !empty($this->settings['client_secret_key'])) {
+      if (!function_exists('key_get_key_value')) {
+        return NULL;
+      }
+      $value = key_get_key_value($this->settings['client_secret_key']);
+      return $value !== NULL ? trim($value) : NULL;
+    }
     // Trim client_id and client_secret to prevent whitespace issues
     if (in_array($key, ['client_id', 'client_secret']) && $value !== NULL) {
       $value = trim($value);
@@ -131,11 +140,23 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
       '#type' => 'textfield',
       '#default_value' => $this->getSetting('client_id'),
     );
-    $form['client_secret'] = array(
-      '#title' => t('Client secret'),
-      '#type' => 'textarea',
-      '#default_value' => $this->getSetting('client_secret'),
-    );
+    if (module_exists('key')) {
+      $form['client_secret_key'] = array(
+        '#title' => t('Client secret'),
+        '#type' => 'key_select',
+        '#default_value' => isset($this->settings['client_secret_key']) ? $this->settings['client_secret_key'] : '',
+        '#key_filters' => array('type' => 'authentication'),
+        '#required' => TRUE,
+        '#description' => t('Select the Key that provides this client secret. The Key provider controls how the secret value is stored.'),
+      );
+    }
+    else {
+      $form['client_secret'] = array(
+        '#title' => t('Client secret'),
+        '#type' => 'textarea',
+        '#default_value' => $this->getSetting('client_secret'),
+      );
+    }
     $form['use_pkce'] = array(
       '#title' => t('Use PKCE'),
       '#type' => 'checkbox',
@@ -167,7 +188,16 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
     if (empty($form_state['values']['client_id'])) {
       form_error($form[$error_element_base . 'client_id'], t('Client ID is required.'));
     }
-    if (empty($form_state['values']['client_secret'])) {
+    if (module_exists('key')) {
+      $client_secret_key = !empty($form_state['values']['client_secret_key']) ? $form_state['values']['client_secret_key'] : '';
+      if (empty($client_secret_key)) {
+        form_error($form[$error_element_base . 'client_secret_key'], t('A client secret key is required.'));
+      }
+      elseif (!key_get_key($client_secret_key)) {
+        form_error($form[$error_element_base . 'client_secret_key'], t('The selected client secret key does not exist.'));
+      }
+    }
+    elseif (empty($form_state['values']['client_secret'])) {
       form_error($form[$error_element_base . 'client_secret'], t('Client secret is required.'));
     }
   }
@@ -176,8 +206,10 @@ abstract class OpenIDConnectClientBase implements OpenIDConnectClientInterface {
    * {@inheritdoc}
    */
   public function settingsFormSubmit($form, &$form_state) {
-    // No need to do anything, but make the function have a body anyway
-    // so that it's callable by overriding methods.
+    // Never save an inline secret when a Key reference is selected.
+    if (module_exists('key') && !empty($form_state['values']['client_secret_key'])) {
+      $form_state['values']['client_secret'] = '';
+    }
   }
 
   /**
